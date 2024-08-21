@@ -1,8 +1,6 @@
-## !!WARNING!!
+## Warning
 
-This crate is an experimental proof-of-concept/work-in-progress. It
-should be expected to change arbitrarily at any moment, and might
-have bugs that cause undefined behavior.
+This library is experimental; both the API and ABI are subject to change.
 
 ## Description
 
@@ -21,50 +19,44 @@ whenever it is processing a request for a particular customer,
 and a CPU profiler might then record that value whenever it interrupts the program
 to collect a stack trace.
 
-The library exposes a C API (in `lib.h`), a Rust API (which just
-re-exports everything from `lib.h`), and an ABI for reading
+The library exposes a C API (in `customlabels.h`), a Rust API
+[documented here](https://docs.rs/custom_labels/0.1.0/custom_labels/), and an ABI for reading
 by external code (e.g., profilers or debuggers).
+
+## Supported Configurations
+
+**Language**: any language that can link against C code.
+
+**Platform**: Linux on x86-64 or aarch64 (64-bit ARM).
+
+## Using from Rust
+
+Simply depend on the [`custom-labels`](https://crates.io/crates/tracing-futures) crate.
+
+## Using from C or C++ (shared library)
+
+For a release build:
+
+``` bash
+CFLAGS="-O2" make
+```
+
+For a debug build:
+
+``` bash
+CFLAGS="-O0 -g" make
+```
+
+Either will produce a library called `libcustomlabels.so` in the repository root,
+which should be linked against during your build process.
+
+## Using from C or C++ (main executable)
+
+Ensure that `customlabels.c` is linked into your executable and that `customlabels.h` is available
+in the include path for any source file from which you want to use custom labels. The details of
+this will depend on your build system.
 
 ## ABI
 
-Three important symbols are exposed.
-
-**`uint32_t custom_labels_abi_version`**
-
-As of the present version, this is always zero.
-
-**`__thread size_t custom_labels_count`**
-
-This thread-local variable stores the number of label/value pairs
-present on the current thread.
-
-**`__thread custom_labels_label_t *custom_labels_storage`**
-
-This thread-local variable is an array of custom labels on
-the current thread. Indexes into this array must be less than
-`custom_labels_count`.
-
-The type of the elements of this array are given by
-
-``` c
-typedef struct {
-        size_t len;
-        unsigned char *buf;
-} custom_labels_string_t;
-
-typedef struct {
-        custom_labels_string_t key;
-        custom_labels_string_t value;
-} custom_labels_label_t;
-```
-
-In the steady state, there is at most one element
-in the array for each unique key, and the buffers for each key
-are never NULL. However, if the thread happens to be suspended
-in the middle of one of the functions of this library,
-those invariants might not hold. To be robust against this possibility,
-consuming code must uphold the following contract:
-
-* It must skip any label whose `key.buf` is NULL, and
-* It must always take the _first_ label corresponding to a given
-  key.
+For profiler authors,
+the ABI is v0 of the Custom Labels ABI described [here](custom-labels-v0.md).

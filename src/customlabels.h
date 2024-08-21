@@ -1,21 +1,21 @@
 typedef unsigned long size_t;
 typedef unsigned uint32_t;
 
+/**
+ * <div rustbindgen nocopy></div>
+ */
 typedef struct {
         size_t len;
         const unsigned char *buf;
 } custom_labels_string_t;
 
+/**
+ * <div rustbindgen nocopy></div>
+ */
 typedef struct {
         custom_labels_string_t key;
         custom_labels_string_t value;
 } custom_labels_label_t;
-
-/**
- * The version of the ABI in use.
- * Currently 0.
- */
-extern uint32_t custom_labels_abi_version;
 
 /**
  *

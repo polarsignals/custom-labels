@@ -1,0 +1,10 @@
+/* This file contains symbols
+ * symbols that the linker must
+ * export dynamically,
+ * to force them to exist even if the binary is
+ * stripped.
+ */
+{
+  custom_labels_abi_version;
+  custom_labels_thread_local_data;
+};
