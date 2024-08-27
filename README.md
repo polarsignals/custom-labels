@@ -60,3 +60,7 @@ this will depend on your build system.
 
 For profiler authors,
 the ABI is v0 of the Custom Labels ABI described [here](custom-labels-v0.md).
+
+## Acknowledgements
+
+* The approach was partially influenced by the APM/universal profiling integration described [here](https://github.com/elastic/apm/blob/bd5fa9c1/specs/agents/universal-profiling-integration.md#process-storage-layout).
