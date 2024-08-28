@@ -31,7 +31,7 @@ by external code (e.g., profilers or debuggers).
 
 ## Using from Rust
 
-Simply depend on the [`custom-labels`](https://crates.io/crates/tracing-futures) crate.
+Simply depend on the [`custom-labels`](https://crates.io/crates/custom-labels) crate.
 
 ## Using from C or C++ (shared library)
 
