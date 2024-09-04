@@ -55,7 +55,7 @@
 //! * [Parca](parca.dev) (when using parca-agent v0.33.0 and later)
 //! * [Polar Signals Cloud](https://www.polarsignals.com) (when using parca-agent v0.33.0 and later).
 //!
-//! If you work on another profiler that also supports this format, [send us a PR](https://github.com/umanwizard/custom-labels)
+//! If you work on another profiler that also supports this format, [send us a PR](https://github.com/polarsignals/custom-labels)
 //! to update this list!
 
 /// Low-level interface to the underlying C library.
