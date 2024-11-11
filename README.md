@@ -31,7 +31,21 @@ by external code (e.g., profilers or debuggers).
 
 ## Using from Rust
 
-Simply depend on the [`custom-labels`](https://crates.io/crates/custom-labels) crate.
+Depend on the [`custom-labels`](https://crates.io/crates/custom-labels) crate as both a standard dependency and a build dependency. For example, in your `Cargo.toml`:
+
+``` toml
+[dependencies]
+custom-labels = "0.1.3"
+
+[build-dependencies]
+custom-labels = "0.1.3"
+```
+
+Then add the following line to your executable's `build.rs`:
+
+``` rust
+custom_labels::build::emit_build_instructions();
+```
 
 ## Using from C or C++ (shared library)
 

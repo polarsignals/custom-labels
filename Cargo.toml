@@ -1,6 +1,6 @@
 [package]
 name = "custom-labels"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "Apache-2.0"
 keywords = ["profiling", "pprof", "polarsignals", "parca"]
@@ -8,6 +8,7 @@ description = "Custom labels for profilers"
 homepage = "https://polarsignals.com"
 repository = "https://github.com/polarsignals/custom-labels"
 readme = "README.md"
+links = "custom-labels"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

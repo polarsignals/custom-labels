@@ -105,6 +105,15 @@ pub mod sys {
     pub use c::custom_labels_set as set;
 }
 
+/// Utilities for build scripts
+pub mod build {
+    /// Emit the instructions required for an
+    /// executable to expose custom labels data.
+    pub fn emit_build_instructions() {
+        println!("cargo:rustc-link-arg=-Wl,--dynamic-list={}", std::env::var("DEP_CUSTOM_LABELS_DLIST_PATH").unwrap());        
+    }
+}
+
 /// Set the label for the specified key to the specified
 /// value while the given function is running.
 ///
