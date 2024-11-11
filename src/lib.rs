@@ -110,7 +110,9 @@ pub mod build {
     /// Emit the instructions required for an
     /// executable to expose custom labels data.
     pub fn emit_build_instructions() {
-        println!("cargo:rustc-link-arg=-Wl,--dynamic-list={}", std::env::var("DEP_CUSTOM_LABELS_DLIST_PATH").unwrap());        
+        let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
+        std::fs::write(&dlist_path, include_str!("../dlist")).unwrap();
+        println!("cargo:rustc-link-arg=-Wl,--dynamic-list={}", dlist_path);
     }
 }
 
