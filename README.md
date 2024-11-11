@@ -20,7 +20,7 @@ and a CPU profiler might then record that value whenever it interrupts the progr
 to collect a stack trace.
 
 The library exposes a C API (in `customlabels.h`), a Rust API
-[documented here](https://docs.rs/custom_labels/0.2/custom_labels/), and an ABI for reading
+[documented here](https://docs.rs/custom_labels/0.2.0/custom_labels/), and an ABI for reading
 by external code (e.g., profilers or debuggers).
 
 ## Supported Configurations
@@ -35,10 +35,10 @@ Depend on the [`custom-labels`](https://crates.io/crates/custom-labels) crate as
 
 ``` toml
 [dependencies]
-custom-labels = "0.2"
+custom-labels = "0.2.0"
 
 [build-dependencies]
-custom-labels = "0.2"
+custom-labels = "0.2.0"
 ```
 
 Then add the following line to your executable's `build.rs`:
