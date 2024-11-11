@@ -12,7 +12,7 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
-bindgen = "0.69"
+bindgen = { version = "0.70", default-features = false }
 cc = "1.0"
 
 [dev-dependencies]
