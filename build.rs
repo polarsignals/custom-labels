@@ -8,7 +8,7 @@ fn main() {
         .compile("customlabels");
 
     println!("cargo:rustc-link-lib=static=customlabels");
-    println!("cargo:rustc-link-arg=-Wl,--dynamic-list=/home/brennan/code/custom-labels/dlist");
+    println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
 
     // let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
     // std::fs::copy("./dlist", &dlist_path).unwrap();
