@@ -1,6 +1,6 @@
 [package]
 name = "custom-labels"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 license = "Apache-2.0"
 keywords = ["profiling", "pprof", "polarsignals", "parca"]
@@ -12,7 +12,7 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
-bindgen = { version = "0.70", default-features = false }
+bindgen = { version = "0.70", default-features = false, features = ["runtime"] }
 cc = "1.0"
 
 [dev-dependencies]
