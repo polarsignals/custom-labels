@@ -2,7 +2,7 @@
 //!
 //! ## Overview
 //!
-//! This library provides Rust bindings to [v0 of the Custom Labels ABI](../custom-labels-v0.md).
+//! This library provides Rust bindings to [v1 of the Custom Labels ABI](../custom-labels-v1.md).
 //!
 //! It allows time ranges within a thread's execution to be annotated with labels (key/value pairs) in such a way
 //! that the labels are visible to a CPU profiler that may
@@ -60,6 +60,7 @@
 
 /// Low-level interface to the underlying C library.
 pub mod sys {
+    #[allow(non_camel_case_types)]
     mod c {
         include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
     }
@@ -103,6 +104,17 @@ pub mod sys {
     pub use c::custom_labels_delete as delete;
     pub use c::custom_labels_get as get;
     pub use c::custom_labels_set as set;
+
+    // these aren't used yet in the higher-level API,
+    // but use them here to prevent "unused" warnings.
+    pub use c::custom_labels_labelset_clone as labelset_clone;
+    pub use c::custom_labels_labelset_delete as labelset_delete;
+    pub use c::custom_labels_labelset_free as labelset_free;
+    pub use c::custom_labels_labelset_get as labelset_get;
+    pub use c::custom_labels_labelset_new as labelset_new;
+    pub use c::custom_labels_labelset_replace as labelset_replace;
+    pub use c::custom_labels_labelset_set as labelset_set;
+    pub use c::custom_labels_labelset_current as labelset_current;
 }
 
 /// Utilities for build scripts
@@ -127,6 +139,12 @@ where
     V: AsRef<[u8]>,
     F: FnOnce() -> Ret,
 {
+    unsafe {
+        if sys::labelset_current().is_null() {
+            let l = sys::labelset_new(0);
+            sys::labelset_replace(l);
+        }
+    }
     struct Guard<'a> {
         k: &'a [u8],
         old_v: Option<sys::String>,
