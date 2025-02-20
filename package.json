@@ -1,0 +1,18 @@
+{
+    "name": "custom-labels",
+    "version": "1.0.4",
+    "description": "test",
+    "main": "js/index.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "install": "node-gyp rebuild"
+    },
+    "author": "",
+    "license": "ISC",
+    "gypfile": true,
+    "type": "cjs",
+    "files": ["js/*.c", "js/*.h", "js/*.js", "src/*.h", "src/*.c", "binding.gyp"],
+    "dependencies": {
+        "bindings": "^1.5.0"
+    }
+}

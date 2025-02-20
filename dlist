@@ -6,5 +6,5 @@
  */
 {
   custom_labels_abi_version;
-  custom_labels_thread_local_data;
+  custom_labels_current_set;
 };
