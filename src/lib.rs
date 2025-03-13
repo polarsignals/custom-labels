@@ -108,13 +108,13 @@ pub mod sys {
     // these aren't used yet in the higher-level API,
     // but use them here to prevent "unused" warnings.
     pub use c::custom_labels_labelset_clone as labelset_clone;
+    pub use c::custom_labels_labelset_current as labelset_current;
     pub use c::custom_labels_labelset_delete as labelset_delete;
     pub use c::custom_labels_labelset_free as labelset_free;
     pub use c::custom_labels_labelset_get as labelset_get;
     pub use c::custom_labels_labelset_new as labelset_new;
     pub use c::custom_labels_labelset_replace as labelset_replace;
     pub use c::custom_labels_labelset_set as labelset_set;
-    pub use c::custom_labels_labelset_current as labelset_current;
 }
 
 /// Utilities for build scripts
@@ -195,5 +195,42 @@ where
         with_label(k, v, || with_labels(i, f))
     } else {
         f()
+    }
+}
+
+pub mod asynchronous {
+    use pin_project::pin_project;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    pub fn with_label<K, V, Fut, Ret>(k: K, v: V, f: Fut) -> impl Future<Output = Ret>
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+        Fut: Future<Output = Ret>,
+    {
+        #[pin_project]
+        struct WithLabel<Fut, K, V> {
+            #[pin]
+            inner: Fut,
+            k: K,
+            v: V,
+        }
+        impl<Fut, K, V, Ret> Future for WithLabel<Fut, K, V>
+        where
+            K: AsRef<[u8]>,
+            V: AsRef<[u8]>,
+            Fut: Future<Output = Ret>,
+        {
+            type Output = Ret;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let p = self.project();
+                super::with_label(p.k, p.v, || p.inner.poll(cx))
+            }
+        }
+
+        WithLabel { inner: f, k, v }
     }
 }

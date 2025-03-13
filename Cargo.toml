@@ -17,6 +17,11 @@ cc = "1.0"
 
 [dev-dependencies]
 rand = "0.8.5"
+axum = "0.8"
+tokio = { version = "1.44", features = ["full"] }
+anyhow = "1.0"
+markdown = "1.0.0-alpha.23"
 
 [dependencies]
 libc = "0.2"
+pin-project = "1.1.10"
