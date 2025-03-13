@@ -35,10 +35,10 @@ Depend on the [`custom-labels`](https://crates.io/crates/custom-labels) crate as
 
 ``` toml
 [dependencies]
-custom-labels = "0.3.2"
+custom-labels = "0.4.0"
 
 [build-dependencies]
-custom-labels = "0.2.0"
+custom-labels = "0.4.0"
 ```
 
 Then add the following line to your executable's `build.rs`:
