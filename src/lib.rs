@@ -115,7 +115,6 @@ pub mod sys {
 
     // these aren't used yet in the higher-level API,
     // but use them here to prevent "unused" warnings.
-    // XXX why doesn't this take a *const rather than a *mut ?
     pub use c::custom_labels_labelset_clone as labelset_clone;
     pub use c::custom_labels_labelset_current as labelset_current;
     pub use c::custom_labels_labelset_delete as labelset_delete;
@@ -137,7 +136,7 @@ pub mod build {
     }
 }
 
-/// A set of key-value labels that can be installed as the current label set. 
+/// A set of key-value labels that can be installed as the current label set.
 pub struct Labelset {
     raw: NonNull<sys::Labelset>,
 }
@@ -153,12 +152,12 @@ impl Labelset {
         }
     }
 
-    /// Create a new label set by cloning the current one.
+    /// Create a new label set by cloning the current one, if it exists.
     pub fn clone_from_current() -> Option<Self> {
-        NonNull::new(unsafe { sys::labelset_current() } as *mut _ /* xxx */).map(|nn| {
-            let raw = NonNull::new(unsafe { sys::labelset_clone(nn.as_ptr()) })
-                .expect("failed to clone current labelset");
-            Self { raw }
+        let cur = unsafe { sys::labelset_current() };
+        (!cur.is_null()).then(|| Self {
+            raw: NonNull::new(unsafe { sys::labelset_clone(cur) })
+                .expect("failed to clone current labelset"),
         })
     }
 

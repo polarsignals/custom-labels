@@ -290,7 +290,7 @@ static int custom_labels_label_clone(custom_labels_label_t lbl, custom_labels_la
 }
 
 // it's fine to call this with the current label 
-custom_labels_labelset_t *custom_labels_labelset_clone(custom_labels_labelset_t *ls) {
+custom_labels_labelset_t *custom_labels_labelset_clone(const custom_labels_labelset_t *ls) {
         custom_labels_labelset_t *new = custom_labels_labelset_new(ls->count);
         if (!new)
                 return NULL;

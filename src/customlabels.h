@@ -94,7 +94,7 @@ custom_labels_labelset_t *custom_labels_labelset_replace(custom_labels_labelset_
  * 
  * Returns the clone on success, NULL otherwise.
  */
-custom_labels_labelset_t *custom_labels_labelset_clone(custom_labels_labelset_t *ls);
+custom_labels_labelset_t *custom_labels_labelset_clone(const custom_labels_labelset_t *ls);
 
 /**
  * Get the label corresponding to a key on the given label set, or NULL if none exists.
