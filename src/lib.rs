@@ -58,6 +58,13 @@
 //! If you work on another profiler that also supports this format, [send us a PR](https://github.com/polarsignals/custom-labels)
 //! to update this list!
 
+use pin_project::pin_project;
+use std::future::Future;
+use std::pin::Pin;
+use std::ptr::NonNull;
+use std::task::Context;
+use std::task::Poll;
+
 /// Low-level interface to the underlying C library.
 pub mod sys {
     #[allow(non_camel_case_types)]
@@ -66,6 +73,7 @@ pub mod sys {
     }
 
     pub use c::custom_labels_label_t as Label;
+    pub use c::custom_labels_labelset_t as Labelset;
     pub use c::custom_labels_string_t as String;
 
     impl<'a> From<&'a [u8]> for self::String {
@@ -107,6 +115,7 @@ pub mod sys {
 
     // these aren't used yet in the higher-level API,
     // but use them here to prevent "unused" warnings.
+    // XXX why doesn't this take a *const rather than a *mut ?
     pub use c::custom_labels_labelset_clone as labelset_clone;
     pub use c::custom_labels_labelset_current as labelset_current;
     pub use c::custom_labels_labelset_delete as labelset_delete;
@@ -125,6 +134,105 @@ pub mod build {
         let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
         std::fs::write(&dlist_path, include_str!("../dlist")).unwrap();
         println!("cargo:rustc-link-arg=-Wl,--dynamic-list={}", dlist_path);
+    }
+}
+
+/// A set of key-value labels that can be installed as the current label set. 
+pub struct Labelset {
+    raw: NonNull<sys::Labelset>,
+}
+
+unsafe impl Send for Labelset {}
+
+impl Labelset {
+    /// Create a new label set.
+    pub fn new() -> Self {
+        Self {
+            raw: NonNull::new(unsafe { sys::labelset_new(0) })
+                .expect("failed to allocate labelset"),
+        }
+    }
+
+    /// Create a new label set by cloning the current one.
+    pub fn clone_from_current() -> Option<Self> {
+        NonNull::new(unsafe { sys::labelset_current() } as *mut _ /* xxx */).map(|nn| {
+            let raw = NonNull::new(unsafe { sys::labelset_clone(nn.as_ptr()) })
+                .expect("failed to clone current labelset");
+            Self { raw }
+        })
+    }
+
+    /// Run a function with this set of labels applied.
+    pub fn enter<F, Ret>(&mut self, f: F) -> Ret
+    where
+        F: FnOnce() -> Ret,
+    {
+        // let t = std::thread::current().id();
+        let old = NonNull::new(unsafe { sys::labelset_replace(self.raw.as_ptr()) });
+        // eprintln!(
+        //     "{t:?} enter labelset, old is 0x{:x}, cur is 0x{:x}",
+        //     old.map(NonNull::as_ptr).unwrap_or(std::ptr::null_mut()) as usize,
+        //     self.raw.as_ptr() as usize,
+        // );
+        let ret = f();
+        let old = old.map(|nn| nn.as_ptr()).unwrap_or(std::ptr::null_mut());
+        let cur = unsafe { sys::labelset_replace(old) };
+        assert!(Some(self.raw) == NonNull::new(cur));
+        // eprintln!(
+        //     "{t:?} exit labelset, old is 0x{:x}",
+        //     old as usize,
+        // );
+        ret
+    }
+
+    /// Run an async task with this set of labels applied, consuming it.
+    pub fn enter_async<Fut, Ret>(self, f: Fut) -> impl Future<Output = Ret>
+    where
+        Fut: Future<Output = Ret>,
+    {
+        #[pin_project]
+        struct EnterAsync<Fut> {
+            #[pin]
+            inner: Fut,
+            this: Labelset,
+        }
+        impl<Fut, Ret> Future for EnterAsync<Fut>
+        where
+            Fut: Future<Output = Ret>,
+        {
+            type Output = Ret;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let p = self.project();
+                p.this.enter(|| p.inner.poll(cx))
+            }
+        }
+
+        EnterAsync {
+            inner: f,
+            this: self,
+        }
+    }
+}
+
+impl Default for Labelset {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Labelset {
+    fn drop(&mut self) {
+        unsafe { sys::labelset_free(self.raw.as_ptr()) }
+    }
+}
+
+impl Clone for Labelset {
+    fn clone(&self) -> Self {
+        Self {
+            raw: NonNull::new(unsafe { sys::labelset_clone(self.raw.as_ptr()) })
+                .expect("failed to clone labelset"),
+        }
     }
 }
 
