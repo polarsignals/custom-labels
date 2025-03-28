@@ -2,7 +2,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/customlabels.c");
     println!("cargo:rerun-if-changed=src/customlabels.h");
     println!("cargo:rerun-if-changed=./dlist");
-    
+
     cc::Build::new()
         .file("src/customlabels.c")
         .compile("customlabels");
@@ -14,7 +14,7 @@ fn main() {
     // std::fs::copy("./dlist", &dlist_path).unwrap();
 
     // println!("cargo::metadata=dlist-path={}", dlist_path);
-    
+
     // Generate bindings using bindgen
     let bindings = bindgen::Builder::default()
         .header("src/customlabels.h")

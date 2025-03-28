@@ -58,6 +58,8 @@
 //! If you work on another profiler that also supports this format, [send us a PR](https://github.com/polarsignals/custom-labels)
 //! to update this list!
 
+use std::ptr::NonNull;
+
 /// Low-level interface to the underlying C library.
 pub mod sys {
     #[allow(non_camel_case_types)]
@@ -66,6 +68,7 @@ pub mod sys {
     }
 
     pub use c::custom_labels_label_t as Label;
+    pub use c::custom_labels_labelset_t as Labelset;
     pub use c::custom_labels_string_t as String;
 
     impl<'a> From<&'a [u8]> for self::String {
@@ -108,13 +111,13 @@ pub mod sys {
     // these aren't used yet in the higher-level API,
     // but use them here to prevent "unused" warnings.
     pub use c::custom_labels_labelset_clone as labelset_clone;
+    pub use c::custom_labels_labelset_current as labelset_current;
     pub use c::custom_labels_labelset_delete as labelset_delete;
     pub use c::custom_labels_labelset_free as labelset_free;
     pub use c::custom_labels_labelset_get as labelset_get;
     pub use c::custom_labels_labelset_new as labelset_new;
     pub use c::custom_labels_labelset_replace as labelset_replace;
     pub use c::custom_labels_labelset_set as labelset_set;
-    pub use c::custom_labels_labelset_current as labelset_current;
 }
 
 /// Utilities for build scripts
@@ -125,6 +128,106 @@ pub mod build {
         let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
         std::fs::write(&dlist_path, include_str!("../dlist")).unwrap();
         println!("cargo:rustc-link-arg=-Wl,--dynamic-list={}", dlist_path);
+    }
+}
+
+/// A set of key-value labels that can be installed as the current label set.
+pub struct Labelset {
+    raw: NonNull<sys::Labelset>,
+}
+
+unsafe impl Send for Labelset {}
+
+impl Labelset {
+    /// Create a new label set.
+    pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    /// Create a new label set with the specified capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        let raw = unsafe { sys::labelset_new(capacity) };
+        let raw = NonNull::new(raw).expect("failed to allocate labelset");
+        Self { raw }
+    }
+
+    /// Create a new label set by cloning the current one, if it exists.
+    pub fn clone_from_current() -> Self {
+        let raw = unsafe { sys::labelset_current() };
+        if raw.is_null() {
+            return Self::new();
+        }
+
+        let raw = unsafe { sys::labelset_clone(raw) };
+        let raw = NonNull::new(raw).expect("failed to clone labelset");
+        Self { raw }
+    }
+
+    /// Run a function with this set of labels applied.
+    pub fn enter<F, Ret>(&mut self, f: F) -> Ret
+    where
+        F: FnOnce() -> Ret,
+    {
+        struct Guard {
+            old: *mut sys::Labelset,
+        }
+
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                unsafe { sys::labelset_replace(self.old) };
+            }
+        }
+
+        let old = unsafe { sys::labelset_replace(self.raw.as_ptr()) };
+        let _guard = Guard { old };
+        f()
+    }
+
+    /// Adds the specified key-value pair to the label set.
+    pub fn set<K, V>(&mut self, key: K, value: V)
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        unsafe {
+            sys::labelset_set(
+                self.raw.as_ptr(),
+                key.as_ref().into(),
+                value.as_ref().into(),
+            )
+        };
+    }
+}
+
+impl Default for Labelset {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Labelset {
+    fn drop(&mut self) {
+        unsafe { sys::labelset_free(self.raw.as_ptr()) }
+    }
+}
+
+impl Clone for Labelset {
+    fn clone(&self) -> Self {
+        let raw = unsafe { sys::labelset_clone(self.raw.as_ptr()) };
+        let raw = NonNull::new(raw).expect("failed to clone labelset");
+        Self { raw }
+    }
+}
+
+impl<K, V> Extend<(K, V)> for Labelset
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+{
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (k, v) in iter {
+            self.set(k, v);
+        }
     }
 }
 
@@ -195,5 +298,117 @@ where
         with_label(k, v, || with_labels(i, f))
     } else {
         f()
+    }
+}
+
+pub mod asynchronous {
+    use pin_project_lite::pin_project;
+    use std::future::Future;
+    use std::iter;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use crate::Labelset;
+
+    pin_project! {
+        /// A [`Future`] with custom labels attached.
+        ///
+        /// This type is returned by the [`Label`] extension trait. See that
+        /// trait's documentation for details.
+        pub struct Labeled<Fut> {
+            #[pin]
+            inner: Fut,
+            labelset: Labelset,
+        }
+    }
+
+    impl<Fut, Ret> Future for Labeled<Fut>
+    where
+        Fut: Future<Output = Ret>,
+    {
+        type Output = Ret;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let p = self.project();
+            p.labelset.enter(|| p.inner.poll(cx))
+        }
+    }
+
+    /// Attaches custom labels to a [`Future`].
+    pub trait Label: Sized {
+        /// Attach the currently active labels to the future.
+        ///
+        /// This can be used to propagate the current labels when spawning
+        /// a new future.
+        fn with_current_labels(self) -> Labeled<Self>;
+
+        /// Attach a single label to the future.
+        ///
+        /// This is equivalent to calling [`with_labels`] with an iterator that
+        /// yields a single key–value pair.
+        fn with_label<K, V, Ret>(self, k: K, v: V) -> Labeled<Self>
+        where
+            K: AsRef<[u8]>,
+            V: AsRef<[u8]>;
+
+        /// Attaches the specified labels to the future.
+        ///
+        /// The labels will be installed in the current thread whenever the
+        /// future is polled, and removed when the poll completes.
+        ///
+        /// This is equivalent to calling [`with_labelset`] with a label
+        /// set constructed like so:
+        ///
+        /// ```rust
+        /// # use custom_labels::Labelset;
+        /// let mut labelset = Labelset::clone_from_current();
+        /// labelset.extend(i);
+        /// ```
+        fn with_labels<I, K, V>(self, i: I) -> Labeled<Self>
+        where
+            I: IntoIterator<Item = (K, V)>,
+            K: AsRef<[u8]>,
+            V: AsRef<[u8]>;
+
+        /// Attaches the specified labelset to the future.
+        ///
+        /// The labels in the set will be installed in the current thread
+        /// whenever the future is polled, and removed when the poll completes.
+        fn with_labelset(self, labelset: Labelset) -> Labeled<Self>;
+    }
+
+    impl<Fut: Future> Label for Fut {
+        fn with_current_labels(self) -> Labeled<Self> {
+            self.with_labels(iter::empty::<(&[u8], &[u8])>())
+        }
+
+        fn with_label<K, V, Ret>(self, k: K, v: V) -> Labeled<Self>
+        where
+            K: AsRef<[u8]>,
+            V: AsRef<[u8]>,
+        {
+            self.with_labels(iter::once((k, v)))
+        }
+
+        fn with_labels<I, K, V>(self, iter: I) -> Labeled<Self>
+        where
+            I: IntoIterator<Item = (K, V)>,
+            K: AsRef<[u8]>,
+            V: AsRef<[u8]>,
+        {
+            let mut labelset = Labelset::clone_from_current();
+            labelset.extend(iter);
+            Labeled {
+                inner: self,
+                labelset,
+            }
+        }
+
+        fn with_labelset(self, labelset: Labelset) -> Labeled<Self> {
+            Labeled {
+                inner: self,
+                labelset,
+            }
+        }
     }
 }

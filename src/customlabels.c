@@ -117,7 +117,7 @@ static int push(custom_labels_string_t key, custom_labels_string_t value) {
 
 static int labelset_push(custom_labels_labelset_t *ls, custom_labels_string_t key, custom_labels_string_t value) {
         if (ls->count == ls->capacity) {
-                size_t new_cap = MAX(2 * cur_capacity, 1);
+                size_t new_cap = MAX(2 * ls->capacity, 1);
                 ls->storage = reallocarray(ls->storage, new_cap, sizeof(custom_labels_label_t));
                 ls->capacity = new_cap;
                 if (!ls->storage)
@@ -290,7 +290,7 @@ static int custom_labels_label_clone(custom_labels_label_t lbl, custom_labels_la
 }
 
 // it's fine to call this with the current label 
-custom_labels_labelset_t *custom_labels_labelset_clone(custom_labels_labelset_t *ls) {
+custom_labels_labelset_t *custom_labels_labelset_clone(const custom_labels_labelset_t *ls) {
         custom_labels_labelset_t *new = custom_labels_labelset_new(ls->count);
         if (!new)
                 return NULL;
