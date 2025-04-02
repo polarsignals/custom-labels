@@ -352,7 +352,7 @@ pub mod asynchronous {
         ///
         /// This is equivalent to calling [`with_labels`] with an iterator that
         /// yields a single key–value pair.
-        fn with_label<K, V, Ret>(self, k: K, v: V) -> Labeled<Self>
+        fn with_label<K, V>(self, k: K, v: V) -> Labeled<Self>
         where
             K: AsRef<[u8]>,
             V: AsRef<[u8]>;
@@ -388,7 +388,7 @@ pub mod asynchronous {
             self.with_labels(iter::empty::<(&[u8], &[u8])>())
         }
 
-        fn with_label<K, V, Ret>(self, k: K, v: V) -> Labeled<Self>
+        fn with_label<K, V>(self, k: K, v: V) -> Labeled<Self>
         where
             K: AsRef<[u8]>,
             V: AsRef<[u8]>,
