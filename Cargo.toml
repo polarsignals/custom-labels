@@ -20,4 +20,4 @@ rand = "0.8.5"
 
 [dependencies]
 libc = "0.2"
-pin-project-lite = "0.2.16"
+pin-project-lite = "0.2"
