@@ -151,16 +151,22 @@ impl Labelset {
         Self { raw }
     }
 
-    /// Create a new label set by cloning the current one, if it exists.
+    /// Create a new label set by cloning the current one, if it exists,
+    /// or creating a new one otherwise.
     pub fn clone_from_current() -> Self {
+        Self::try_clone_from_current().unwrap_or_default()
+    }
+
+    /// Create a new label set by cloning the current one, if it exists,
+    pub fn try_clone_from_current() -> Option<Self> {
         let raw = unsafe { sys::labelset_current() };
         if raw.is_null() {
-            return Self::new();
+            None
+        } else {
+            let raw = unsafe { sys::labelset_clone(raw) };
+            let raw = NonNull::new(raw).expect("failed to clone labelset");
+            Some(Self { raw })
         }
-
-        let raw = unsafe { sys::labelset_clone(raw) };
-        let raw = NonNull::new(raw).expect("failed to clone labelset");
-        Self { raw }
     }
 
     /// Run a function with this set of labels applied.
