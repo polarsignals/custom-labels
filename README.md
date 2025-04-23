@@ -20,7 +20,7 @@ and a CPU profiler might then record that value whenever it interrupts the progr
 to collect a stack trace.
 
 The library exposes a C API (in `customlabels.h`), a Rust API
-[documented here](https://docs.rs/custom_labels/0.3.2/custom_labels/), and an ABI for reading
+[documented here](https://docs.rs/custom_labels/latest/custom_labels/), and an ABI for reading
 by external code (e.g., profilers or debuggers).
 
 ## Supported Configurations
@@ -73,7 +73,7 @@ this will depend on your build system.
 ## ABI
 
 For profiler authors,
-the ABI is v0 of the Custom Labels ABI described [here](custom-labels-v0.md).
+the ABI is v1 of the Custom Labels ABI described [here](custom-labels-v1.md).
 
 ## Acknowledgements
 
