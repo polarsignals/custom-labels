@@ -223,7 +223,14 @@ int custom_labels_labelset_set(custom_labels_labelset_t *ls, custom_labels_strin
         assert(key.buf);
         custom_labels_label_t *old = labelset_get_mut(ls, key);
         if (old) {
-                old->value = value;
+                unsigned char *new_value_buf = malloc(value.len);
+                if (!new_value_buf) {
+                        return errno;
+                }
+                memcpy(new_value_buf, value.buf, value.len);
+                free((void *)old->value.buf);
+
+                old->value = (custom_labels_string_t){ value.len, new_value_buf };
                 return 0;
         }
         return labelset_push(ls, key, value);
