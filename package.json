@@ -1,6 +1,6 @@
 {
     "name": "@polarsignals/custom-labels",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "description": "test",
     "main": "js/index.js",
     "scripts": {
@@ -17,7 +17,8 @@
         "js/*.js",
         "src/*.h",
         "src/*.c",
-        "binding.gyp"
+        "binding.gyp",
+        "build.js"
     ],
     "dependencies": {
         "bindings": "^1.5.0",
