@@ -5,14 +5,22 @@
     "main": "js/index.js",
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1",
-        "install": "node-gyp rebuild"
+        "install": "node build.js"
     },
     "author": "",
     "license": "ISC",
     "gypfile": true,
     "type": "cjs",
-    "files": ["js/*.c", "js/*.h", "js/*.js", "src/*.h", "src/*.c", "binding.gyp"],
+    "files": [
+        "js/*.c",
+        "js/*.h",
+        "js/*.js",
+        "src/*.h",
+        "src/*.c",
+        "binding.gyp"
+    ],
     "dependencies": {
-        "bindings": "^1.5.0"
+        "bindings": "^1.5.0",
+        "node-gyp": "^11.2.0"
     }
 }
