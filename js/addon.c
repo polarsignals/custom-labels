@@ -36,8 +36,17 @@ struct labelset_ref {
   struct ref_counted_labelset *target;
 };
 
+#include <stdio.h>
+
+static void pdbg(const struct labelset_ref *ref) {
+  custom_labels_labelset_print_debug(ref->target->native);
+  fprintf(stderr, " %p->%p %d\n", ref, ref->target, ref->target->n_refs);
+}
+
 void LabelSetRefFz(napi_env env, void *finalize_data, void *finalize_hint) {
   struct labelset_ref *ref = (struct labelset_ref *)finalize_data;
+  fprintf(stderr, "FZ: ");
+  pdbg(ref);
   if (!--ref->target->n_refs) {
     custom_labels_labelset_free(ref->target->native);
     free(ref->target);
@@ -266,6 +275,18 @@ LabelSetInstall(napi_env env, napi_callback_info info) {
   return NULL;
 }
 
+static napi_value
+LabelSetPrintDebug(napi_env env, napi_callback_info info) {
+  napi_value this;
+  NODE_API_CALL(env, napi_get_cb_info(env, info, NULL, NULL, &this, NULL));
+  struct labelset_ref *ref;
+  NODE_API_CALL(env, napi_unwrap(env, this, (void **)&ref));
+
+  pdbg(ref);
+  return NULL;
+}
+
+
 napi_value ClearLabelSet(napi_env env, napi_callback_info info) {
   custom_labels_labelset_replace(NULL);
   return NULL;
@@ -296,6 +317,7 @@ napi_value create_addon(napi_env env) {
     { "getValue", NULL, LabelSetGetValue, NULL, NULL, NULL, napi_default, NULL },
     { "deleteValue", NULL, LabelSetDeleteValue, NULL, NULL, NULL, napi_default, NULL },
     { "install", NULL, LabelSetInstall, NULL, NULL, NULL, napi_default, NULL },
+    { "printDebug", NULL, LabelSetPrintDebug, NULL, NULL, NULL, napi_default, NULL },
   };
   
   NODE_API_CALL(env, napi_define_class(env, "LabelSetRef", NAPI_AUTO_LENGTH, LabelSetRefCtor,

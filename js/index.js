@@ -7,7 +7,7 @@ if (process.platform == 'linux') {
 
     const addon = bindings('customlabels');
 
-    const { createHook, executionAsyncId, AsyncResource } = require( 'node:async_hooks');
+    const { createHook, executionAsyncId, triggerAsyncId, AsyncResource } = require( 'node:async_hooks');
     const { writeSync }  = require( 'fs');
     const { inspect }  = require( 'util');
 
@@ -31,7 +31,8 @@ if (process.platform == 'linux') {
             }
         },
         after(asyncId) {
-            const x = lsByAsyncId.get(executionAsyncId());
+            const t = triggerAsyncId();
+            const x = lsByAsyncId.get(t);
             if (x) {
                 x.install();
             } else {
