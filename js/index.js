@@ -1,5 +1,7 @@
 let withLabel;
 
+let hook;
+
 if (process.platform == 'linux') {
     const bindings = require('bindings');
 
@@ -13,7 +15,7 @@ if (process.platform == 'linux') {
 
     const lsByAsyncId = new Map();
 
-    const h = createHook({
+    hook = createHook({
         init(asyncId, type, triggerAsyncId, resource) {
             const parent = lsByAsyncId.get(triggerAsyncId);
             if (parent) {
@@ -41,7 +43,7 @@ if (process.platform == 'linux') {
         },   
     });
 
-    h.enable();
+    hook.enable();
 
     withLabel = function(k, v, f) {
         let ls = lsByAsyncId.get(executionAsyncId());
