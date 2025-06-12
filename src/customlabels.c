@@ -49,6 +49,20 @@ static bool eq(custom_labels_string_t l, custom_labels_string_t r) {
                 !memcmp(l.buf, r.buf, l.len);
 }
 
+#include <stdio.h>
+
+void custom_labels_labelset_print_debug(custom_labels_labelset_t *ls) {
+  unsigned ct = ls->count;
+  fprintf(stderr, "{");
+  for (unsigned i = 0; i < ct; ++i) {
+    custom_labels_label_t *lbl = &ls->storage[i];
+    fprintf(stderr, "%.*s: %.*s", (int)lbl->key.len, lbl->key.buf, (int)lbl->value.len, lbl->value.buf);
+    if (i != ct - 1)
+            fprintf(stderr, ", ");
+  }
+  fprintf(stderr, "}");
+}
+
 static custom_labels_label_t *labelset_get_mut(custom_labels_labelset_t *ls, custom_labels_string_t key) {
         for (size_t i = 0; i < ls->count; ++i) {
                 if (!ls->storage[i].key.buf) {

@@ -2,6 +2,11 @@ let withLabel;
 
 let hook;
 
+// function mylog(s) {
+//     // fs.writeFileSync(process.stderr, s + '\n');
+//     process.stderr.write(s + '\n');
+// }
+
 if (process.platform == 'linux') {
     const bindings = require('bindings');
 
@@ -17,29 +22,46 @@ if (process.platform == 'linux') {
 
     hook = createHook({
         init(asyncId, type, triggerAsyncId, resource) {
+            // mylog("init: " + asyncId + ", " + triggerAsyncId);
             const parent = lsByAsyncId.get(triggerAsyncId);
             if (parent) {
+                // mylog("parent:");
+                // parent.printDebug();
                 lsByAsyncId.set(asyncId, new addon.LabelSetRef(parent));
             } else {
                 lsByAsyncId.set(asyncId, new addon.LabelSetRef());
             }
         },
         before(asyncId) {
+            // mylog("before: " + asyncId);
             const x = lsByAsyncId.get(asyncId);
             if (x) {
+                // x.printDebug();
                 x.install();
+            } else {
+                // mylog("no set");
             }
         },
         after(asyncId) {
             const t = triggerAsyncId();
+            // mylog("after: " + asyncId + ", t: " + t);
             const x = lsByAsyncId.get(t);
             if (x) {
+                // x.printDebug();
                 x.install();
             } else {
+                // mylog("no set");
                 addon.clearLabelSet();
             }
         },
         destroy(asyncId) {
+            // mylog("destroy: " + asyncId);
+            // const x = lsByAsyncId.get(asyncId);
+            // if (x) {
+            //     x.printDebug();
+            // } else {
+            //     mylog("no set");
+            // }
             lsByAsyncId.delete(asyncId);
         },   
     });
@@ -47,7 +69,9 @@ if (process.platform == 'linux') {
     hook.enable();
 
     withLabel = function(k, v, f) {
-        let ls = lsByAsyncId.get(executionAsyncId());
+        const xct = executionAsyncId();
+        // mylog('wl: ' + k + ' ' + v + '; xct: ' + xct);
+        let ls = lsByAsyncId.get(xct);
         if (!ls) {
             ls = new addon.LabelSetRef();
             lsByAsyncId.set(executionAsyncId, ls);
@@ -61,6 +85,8 @@ if (process.platform == 'linux') {
         } else {
             ls.deleteValue(k);
         }
+        // mylog('wl done. xct: ' + xct);
+        // ls.printDebug();
         return retval;
     };
 } else {

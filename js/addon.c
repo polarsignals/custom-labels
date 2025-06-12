@@ -40,7 +40,7 @@ struct labelset_ref {
 
 static void pdbg(const struct labelset_ref *ref) {
   custom_labels_labelset_print_debug(ref->target->native);
-  fprintf(stderr, " %p->%p %d\n", ref, ref->target, ref->target->n_refs);
+  fprintf(stderr, " %p -> %p %d\n", ref, ref->target, ref->target->n_refs);
 }
 
 void LabelSetRefFz(napi_env env, void *finalize_data, void *finalize_hint) {
