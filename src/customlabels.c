@@ -271,11 +271,10 @@ void custom_labels_labelset_delete(custom_labels_labelset_t *ls, custom_labels_s
                 // this block is like swap_delete, but far simpler due to not needing barriers
                 assert(ls->count > 0); // impossible to be empty if we got here.
                 custom_labels_label_t *last = &ls->storage[ls->count - 1];
-                if (last != old) {
-                        free((void *)old->key.buf);
-                        free((void *)old->value.buf);
-                        *old = *last;
-                }
+                free((void *)old->key.buf);
+                free((void *)old->value.buf);
+                *old = *last;
+                --ls->count;
         }
 }
 
