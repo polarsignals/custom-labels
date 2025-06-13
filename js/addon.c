@@ -45,8 +45,6 @@ static void pdbg(const struct labelset_ref *ref) {
 
 void LabelSetRefFz(napi_env env, void *finalize_data, void *finalize_hint) {
   struct labelset_ref *ref = (struct labelset_ref *)finalize_data;
-  fprintf(stderr, "FZ: ");
-  pdbg(ref);
   if (!--ref->target->n_refs) {
     custom_labels_labelset_free(ref->target->native);
     free(ref->target);
