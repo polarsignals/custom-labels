@@ -40,11 +40,13 @@ struct labelset_ref {
 
 static void pdbg(const struct labelset_ref *ref) {
   custom_labels_labelset_print_debug(ref->target->native);
-  fprintf(stderr, " %p -> %p %d\n", ref, ref->target, ref->target->n_refs);
+  fprintf(stderr, " %p -> %p -> %p %d\n", ref, ref->target, ref->target->native, ref->target->n_refs);
 }
 
 void LabelSetRefFz(napi_env env, void *finalize_data, void *finalize_hint) {
   struct labelset_ref *ref = (struct labelset_ref *)finalize_data;
+  /* fprintf(stderr, "Fz: "); */
+  /* pdbg(ref); */
   if (!--ref->target->n_refs) {
     custom_labels_labelset_free(ref->target->native);
     free(ref->target);
@@ -290,6 +292,22 @@ napi_value ClearLabelSet(napi_env env, napi_callback_info info) {
   return NULL;
 }
 
+napi_value Log(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  if (argc != 1) {
+    napi_throw_error(env, NULL, "log(s)");
+    return NULL;
+  }
+  char buf[1024];
+  size_t len;
+  NODE_API_CALL(env, napi_get_value_string_utf8(env, argv[0], buf, sizeof(buf), &len));
+  fprintf(stderr, "%s", buf);
+
+  return NULL;
+}
+
 
 napi_value create_addon(napi_env env) {
   napi_value result;
@@ -307,6 +325,19 @@ napi_value create_addon(napi_env env) {
                                              result,
                                              "clearLabelSet",
                                              clear_label_set_function));
+
+  napi_value log_function;
+  NODE_API_CALL(env, napi_create_function(env,
+                                          "log",
+                                          NAPI_AUTO_LENGTH,
+                                          Log,
+                                          NULL,
+                                          &log_function));
+
+  NODE_API_CALL(env, napi_set_named_property(env,
+                                             result,
+                                             "log",
+                                             log_function));
   
   napi_value labelset_ref;
 
