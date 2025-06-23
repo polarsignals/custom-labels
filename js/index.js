@@ -25,7 +25,7 @@ if (process.platform == 'linux') {
                 lsByAsyncId.set(asyncId, new addon.LabelSetRef(parent));
             } else {
                 // addon.log("no parent\n");
-                lsByAsyncId.set(asyncId, new addon.LabelSetRef());
+                // lsByAsyncId.set(asyncId, new addon.LabelSetRef());
             }
         },
         before(asyncId) {
