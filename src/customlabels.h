@@ -45,7 +45,12 @@ const custom_labels_label_t *custom_labels_get(custom_labels_string_t key);
  */
 void custom_labels_delete(custom_labels_string_t key);
 
-void custom_labels_labelset_print_debug(custom_labels_labelset_t *ls);
+/**
+ * Returns a debug string representing the given label set.
+ *
+ * The caller must free the returned string using `free`.
+ */
+char *custom_labels_labelset_debug_string(const custom_labels_labelset_t *ls);
 
 /**
  * Set a new custom label, or reset an existing one, on the current label set.

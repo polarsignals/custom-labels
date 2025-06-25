@@ -51,16 +51,48 @@ static bool eq(custom_labels_string_t l, custom_labels_string_t r) {
 
 #include <stdio.h>
 
-void custom_labels_labelset_print_debug(custom_labels_labelset_t *ls) {
-  unsigned ct = ls->count;
-  fprintf(stderr, "{");
-  for (unsigned i = 0; i < ct; ++i) {
-    custom_labels_label_t *lbl = &ls->storage[i];
-    fprintf(stderr, "%.*s: %.*s", (int)lbl->key.len, lbl->key.buf, (int)lbl->value.len, lbl->value.buf);
-    if (i != ct - 1)
-            fprintf(stderr, ", ");
-  }
-  fprintf(stderr, "}");
+char *custom_labels_labelset_debug_string(const custom_labels_labelset_t *ls) {
+        size_t len = 2; // for '{' and '}'
+        for (size_t i = 0; i < ls->count; ++i) {
+                len += ls->storage[i].key.len;
+                len += 2; // for ': '
+                len += ls->storage[i].value.len;
+                if (i > 0) {
+                        len += 2; // for ', '
+                }
+        }
+        len += 1; // for '\0'
+
+        char *out = malloc(len);
+        if (!out) {
+                return NULL;
+        }
+        char *s = out;
+
+        *s++ = '{';
+        for (size_t i = 0; i < ls->count; ++i) {
+                const custom_labels_label_t *lbl = &ls->storage[i];
+
+                if (i > 0) {
+                        *s++ = ',';
+                        *s++ = ' ';
+                }
+
+                memcpy(s, lbl->key.buf, lbl->key.len);
+                s += lbl->key.len;
+
+                *s++ = ':';
+                *s++ = ' ';
+
+                memcpy(s, lbl->value.buf, lbl->value.len);
+                s += lbl->value.len;
+        }
+        *s++ = '}';
+        *s++ = '\0';
+
+        assert((s - out) == (ssize_t) len);
+
+        return out;
 }
 
 static custom_labels_label_t *labelset_get_mut(custom_labels_labelset_t *ls, custom_labels_string_t key) {

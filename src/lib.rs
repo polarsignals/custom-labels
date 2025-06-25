@@ -58,7 +58,11 @@
 //! If you work on another profiler that also supports this format, [send us a PR](https://github.com/polarsignals/custom-labels)
 //! to update this list!
 
+use std::ffi::CStr;
 use std::ptr::NonNull;
+use std::{fmt, slice};
+
+use libc::c_char;
 
 /// Low-level interface to the underlying C library.
 pub mod sys {
@@ -108,10 +112,9 @@ pub mod sys {
     pub use c::custom_labels_get as get;
     pub use c::custom_labels_set as set;
 
-    // these aren't used yet in the higher-level API,
-    // but use them here to prevent "unused" warnings.
     pub use c::custom_labels_labelset_clone as labelset_clone;
     pub use c::custom_labels_labelset_current as labelset_current;
+    pub use c::custom_labels_labelset_debug_string as labelset_debug_string;
     pub use c::custom_labels_labelset_delete as labelset_delete;
     pub use c::custom_labels_labelset_free as labelset_free;
     pub use c::custom_labels_labelset_get as labelset_get;
@@ -195,13 +198,37 @@ impl Labelset {
         K: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
-        unsafe {
+        let errno = unsafe {
             sys::labelset_set(
                 self.raw.as_ptr(),
                 key.as_ref().into(),
                 value.as_ref().into(),
             )
         };
+        if errno != 0 {
+            panic!("corruption in custom labels library: errno {errno}");
+        }
+    }
+
+    /// Deletes the specified label, if it exists, from the label set.
+    pub fn delete<K>(&mut self, key: K)
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe { sys::labelset_delete(self.raw.as_ptr(), key.as_ref().into()) }
+    }
+
+    /// Gets the label corresponding to a key on the given label set,
+    /// or `None` if no such label exists.
+    pub fn get<K>(&self, key: K) -> Option<&[u8]>
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe {
+            sys::labelset_get(self.raw.as_ptr(), key.as_ref().into())
+                .as_ref()
+                .map(|lbl| slice::from_raw_parts(lbl.value.buf, lbl.value.len))
+        }
     }
 }
 
@@ -234,6 +261,91 @@ where
         for (k, v) in iter {
             self.set(k, v);
         }
+    }
+}
+
+impl fmt::Debug for Labelset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_labelset(f, self.raw.as_ptr())
+    }
+}
+
+fn debug_labelset(f: &mut fmt::Formatter<'_>, labelset: *const sys::Labelset) -> fmt::Result {
+    struct Guard {
+        cstr: *mut c_char,
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe { libc::free(self.cstr as *mut _) };
+        }
+    }
+
+    let guard = Guard {
+        cstr: unsafe { sys::labelset_debug_string(labelset) },
+    };
+    let str = unsafe { CStr::from_ptr(guard.cstr) }.to_string_lossy();
+    f.write_str(&str)
+}
+
+/// The active label set for the current thread.
+pub const CURRENT_LABELSET: CurrentLabelset = CurrentLabelset { _priv: () };
+
+/// The type of [`CURRENT_LABELSET`].
+pub struct CurrentLabelset {
+    _priv: (),
+}
+
+impl CurrentLabelset {
+    /// Adds the specified key-value pair to the current label set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no current label set.
+    pub fn set<K, V>(&self, key: K, value: V)
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        if unsafe { sys::labelset_current() }.is_null() {
+            panic!("no current label set");
+        }
+        let errno = unsafe { sys::set(key.as_ref().into(), value.as_ref().into()) };
+        if errno != 0 {
+            panic!("corruption in custom labels library: errno {errno}");
+        }
+    }
+
+    /// Deletes the specified label, if it exists, from the current label set.
+    pub fn delete<K>(&self, key: K)
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe { sys::delete(key.as_ref().into()) }
+    }
+
+    /// Gets the label corresponding to a key on the current label set,
+    /// or `None` if no such label exists.
+    pub fn get<K>(&self, key: K) -> Option<Vec<u8>>
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe {
+            sys::get(key.as_ref().into()).as_ref().map(|lbl| {
+                let v = slice::from_raw_parts(lbl.value.buf, lbl.value.len);
+                v.to_vec()
+            })
+        }
+    }
+}
+
+impl fmt::Debug for CurrentLabelset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let current = unsafe { sys::labelset_current() };
+        if current.is_null() {
+            panic!("no current labelset");
+        }
+        debug_labelset(f, current)
     }
 }
 
