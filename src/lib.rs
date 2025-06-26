@@ -58,11 +58,8 @@
 //! If you work on another profiler that also supports this format, [send us a PR](https://github.com/polarsignals/custom-labels)
 //! to update this list!
 
-use std::ffi::CStr;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::{fmt, slice};
-
-use libc::c_char;
 
 /// Low-level interface to the underlying C library.
 pub mod sys {
@@ -271,20 +268,16 @@ impl fmt::Debug for Labelset {
 }
 
 fn debug_labelset(f: &mut fmt::Formatter<'_>, labelset: *const sys::Labelset) -> fmt::Result {
-    struct Guard {
-        cstr: *mut c_char,
-    }
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            unsafe { libc::free(self.cstr as *mut _) };
-        }
-    }
-
-    let guard = Guard {
-        cstr: unsafe { sys::labelset_debug_string(labelset) },
+    let mut cstr = sys::String {
+        len: 0,
+        buf: ptr::null(),
     };
-    let str = unsafe { CStr::from_ptr(guard.cstr) }.to_string_lossy();
+    let errno = unsafe { sys::labelset_debug_string(labelset, &mut cstr) };
+    if errno != 0 {
+        panic!("out of memory");
+    }
+    let bytes = unsafe { slice::from_raw_parts(cstr.buf, cstr.len) };
+    let str = String::from_utf8_lossy(bytes);
     f.write_str(&str)
 }
 
@@ -312,7 +305,7 @@ impl CurrentLabelset {
         }
         let errno = unsafe { sys::set(key.as_ref().into(), value.as_ref().into()) };
         if errno != 0 {
-            panic!("corruption in custom labels library: errno {errno}");
+            panic!("out of memory");
         }
     }
 

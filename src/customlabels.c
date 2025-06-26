@@ -51,23 +51,23 @@ static bool eq(custom_labels_string_t l, custom_labels_string_t r) {
 
 #include <stdio.h>
 
-char *custom_labels_labelset_debug_string(const custom_labels_labelset_t *ls) {
-        size_t len = 2; // for '{' and '}'
+int custom_labels_labelset_debug_string(const custom_labels_labelset_t *ls, custom_labels_string_t *out) {
+        out->len = 2; // for '{' and '}'
         for (size_t i = 0; i < ls->count; ++i) {
-                len += ls->storage[i].key.len;
-                len += 2; // for ': '
-                len += ls->storage[i].value.len;
+                out->len += ls->storage[i].key.len;
+                out->len += 2; // for ': '
+                out->len += ls->storage[i].value.len;
                 if (i > 0) {
-                        len += 2; // for ', '
+                        out->len += 2; // for ', '
                 }
         }
-        len += 1; // for '\0'
+        out->len += 1; // for '\0'
 
-        char *out = malloc(len);
-        if (!out) {
-                return NULL;
+        unsigned char *s = malloc(out->len);
+        if (!s) {
+                return errno;
         }
-        char *s = out;
+        out->buf = s;
 
         *s++ = '{';
         for (size_t i = 0; i < ls->count; ++i) {
@@ -90,9 +90,9 @@ char *custom_labels_labelset_debug_string(const custom_labels_labelset_t *ls) {
         *s++ = '}';
         *s++ = '\0';
 
-        assert((s - out) == (ssize_t) len);
+        assert((s - out->buf) == (ssize_t) out->len);
 
-        return out;
+        return 0;
 }
 
 static custom_labels_label_t *labelset_get_mut(custom_labels_labelset_t *ls, custom_labels_string_t key) {
