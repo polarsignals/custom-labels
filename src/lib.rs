@@ -58,7 +58,7 @@
 //! If you work on another profiler that also supports this format, [send us a PR](https://github.com/polarsignals/custom-labels)
 //! to update this list!
 
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use std::{fmt, slice};
 
 /// Low-level interface to the underlying C library.
@@ -81,26 +81,52 @@ pub mod sys {
         }
     }
 
-    impl Clone for self::String {
-        fn clone(&self) -> Self {
+    impl self::String {
+        pub fn to_owned(&self) -> OwnedString {
             unsafe {
                 let buf = libc::malloc(self.len);
                 if buf.is_null() {
                     panic!("Out of memory");
                 }
                 libc::memcpy(buf, self.buf as *const _, self.len);
-                Self {
+                OwnedString(Self {
                     len: self.len,
                     buf: buf as *mut _,
-                }
+                })
             }
         }
     }
 
-    impl Drop for self::String {
+    pub struct OwnedString(self::String);
+
+    impl OwnedString {
+        /// Creates a new empty owned string.
+        pub fn new() -> Self {
+            OwnedString(self::String {
+                len: 0,
+                buf: std::ptr::null(),
+            })
+        }
+    }
+
+    impl std::ops::Deref for OwnedString {
+        type Target = self::String;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl std::ops::DerefMut for OwnedString {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
+
+    impl Drop for OwnedString {
         fn drop(&mut self) {
             unsafe {
-                libc::free(self.buf as *mut _);
+                libc::free(self.0.buf as *mut _);
             }
         }
     }
@@ -268,11 +294,8 @@ impl fmt::Debug for Labelset {
 }
 
 fn debug_labelset(f: &mut fmt::Formatter<'_>, labelset: *const sys::Labelset) -> fmt::Result {
-    let mut cstr = sys::String {
-        len: 0,
-        buf: ptr::null(),
-    };
-    let errno = unsafe { sys::labelset_debug_string(labelset, &mut cstr) };
+    let mut cstr = sys::OwnedString::new();
+    let errno = unsafe { sys::labelset_debug_string(labelset, &mut *cstr) };
     if errno != 0 {
         panic!("out of memory");
     }
@@ -361,13 +384,13 @@ where
     }
     struct Guard<'a> {
         k: &'a [u8],
-        old_v: Option<sys::String>,
+        old_v: Option<sys::OwnedString>,
     }
 
     impl<'a> Drop for Guard<'a> {
         fn drop(&mut self) {
             if let Some(old_v) = std::mem::take(&mut self.old_v) {
-                let errno = unsafe { sys::set(self.k.into(), old_v) };
+                let errno = unsafe { sys::set(self.k.into(), *old_v) };
                 if errno != 0 {
                     panic!("corruption in custom labels library: errno {errno}");
                 }
@@ -377,7 +400,7 @@ where
         }
     }
 
-    let old_v = unsafe { sys::get(k.as_ref().into()).as_ref() }.map(|lbl| lbl.value.clone());
+    let old_v = unsafe { sys::get(k.as_ref().into()).as_ref() }.map(|lbl| lbl.value.to_owned());
     let _g = Guard {
         k: k.as_ref(),
         old_v,

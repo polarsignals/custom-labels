@@ -1,9 +1,6 @@
 typedef unsigned long size_t;
 typedef unsigned uint32_t;
 
-/**
- * <div rustbindgen nocopy></div>
- */
 typedef struct {
         size_t len;
         const unsigned char *buf;
