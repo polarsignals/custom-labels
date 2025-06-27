@@ -229,7 +229,7 @@ impl Labelset {
             )
         };
         if errno != 0 {
-            panic!("corruption in custom labels library: errno {errno}");
+            panic!("out of memory");
         }
     }
 
