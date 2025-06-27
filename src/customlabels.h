@@ -1,9 +1,6 @@
 typedef unsigned long size_t;
 typedef unsigned uint32_t;
 
-/**
- * <div rustbindgen nocopy></div>
- */
 typedef struct {
         size_t len;
         const unsigned char *buf;
@@ -45,7 +42,13 @@ const custom_labels_label_t *custom_labels_get(custom_labels_string_t key);
  */
 void custom_labels_delete(custom_labels_string_t key);
 
-void custom_labels_labelset_print_debug(custom_labels_labelset_t *ls);
+/**
+ * Writes a debug string representing the given label set into `out`.
+ * If successful, the caller must free `out->buf`.
+ *
+ * Returns 0 on success, `errno` otherwise.
+ */
+int custom_labels_labelset_debug_string(const custom_labels_labelset_t *ls, custom_labels_string_t *out);
 
 /**
  * Set a new custom label, or reset an existing one, on the current label set.

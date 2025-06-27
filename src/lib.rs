@@ -59,6 +59,7 @@
 //! to update this list!
 
 use std::ptr::NonNull;
+use std::{fmt, slice};
 
 /// Low-level interface to the underlying C library.
 pub mod sys {
@@ -80,26 +81,52 @@ pub mod sys {
         }
     }
 
-    impl Clone for self::String {
-        fn clone(&self) -> Self {
+    impl self::String {
+        pub fn to_owned(&self) -> OwnedString {
             unsafe {
                 let buf = libc::malloc(self.len);
                 if buf.is_null() {
                     panic!("Out of memory");
                 }
                 libc::memcpy(buf, self.buf as *const _, self.len);
-                Self {
+                OwnedString(Self {
                     len: self.len,
                     buf: buf as *mut _,
-                }
+                })
             }
         }
     }
 
-    impl Drop for self::String {
+    pub struct OwnedString(self::String);
+
+    impl OwnedString {
+        /// Creates a new empty owned string.
+        pub fn new() -> Self {
+            OwnedString(self::String {
+                len: 0,
+                buf: std::ptr::null(),
+            })
+        }
+    }
+
+    impl std::ops::Deref for OwnedString {
+        type Target = self::String;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl std::ops::DerefMut for OwnedString {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
+
+    impl Drop for OwnedString {
         fn drop(&mut self) {
             unsafe {
-                libc::free(self.buf as *mut _);
+                libc::free(self.0.buf as *mut _);
             }
         }
     }
@@ -108,10 +135,9 @@ pub mod sys {
     pub use c::custom_labels_get as get;
     pub use c::custom_labels_set as set;
 
-    // these aren't used yet in the higher-level API,
-    // but use them here to prevent "unused" warnings.
     pub use c::custom_labels_labelset_clone as labelset_clone;
     pub use c::custom_labels_labelset_current as labelset_current;
+    pub use c::custom_labels_labelset_debug_string as labelset_debug_string;
     pub use c::custom_labels_labelset_delete as labelset_delete;
     pub use c::custom_labels_labelset_free as labelset_free;
     pub use c::custom_labels_labelset_get as labelset_get;
@@ -195,13 +221,37 @@ impl Labelset {
         K: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
-        unsafe {
+        let errno = unsafe {
             sys::labelset_set(
                 self.raw.as_ptr(),
                 key.as_ref().into(),
                 value.as_ref().into(),
             )
         };
+        if errno != 0 {
+            panic!("out of memory");
+        }
+    }
+
+    /// Deletes the specified label, if it exists, from the label set.
+    pub fn delete<K>(&mut self, key: K)
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe { sys::labelset_delete(self.raw.as_ptr(), key.as_ref().into()) }
+    }
+
+    /// Gets the label corresponding to a key on the given label set,
+    /// or `None` if no such label exists.
+    pub fn get<K>(&self, key: K) -> Option<&[u8]>
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe {
+            sys::labelset_get(self.raw.as_ptr(), key.as_ref().into())
+                .as_ref()
+                .map(|lbl| slice::from_raw_parts(lbl.value.buf, lbl.value.len))
+        }
     }
 }
 
@@ -237,6 +287,84 @@ where
     }
 }
 
+impl fmt::Debug for Labelset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_labelset(f, self.raw.as_ptr())
+    }
+}
+
+fn debug_labelset(f: &mut fmt::Formatter<'_>, labelset: *const sys::Labelset) -> fmt::Result {
+    let mut cstr = sys::OwnedString::new();
+    let errno = unsafe { sys::labelset_debug_string(labelset, &mut *cstr) };
+    if errno != 0 {
+        panic!("out of memory");
+    }
+    let bytes = unsafe { slice::from_raw_parts(cstr.buf, cstr.len) };
+    let str = String::from_utf8_lossy(bytes);
+    f.write_str(&str)
+}
+
+/// The active label set for the current thread.
+pub const CURRENT_LABELSET: CurrentLabelset = CurrentLabelset { _priv: () };
+
+/// The type of [`CURRENT_LABELSET`].
+pub struct CurrentLabelset {
+    _priv: (),
+}
+
+impl CurrentLabelset {
+    /// Adds the specified key-value pair to the current label set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no current label set.
+    pub fn set<K, V>(&self, key: K, value: V)
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        if unsafe { sys::labelset_current() }.is_null() {
+            panic!("no current label set");
+        }
+        let errno = unsafe { sys::set(key.as_ref().into(), value.as_ref().into()) };
+        if errno != 0 {
+            panic!("out of memory");
+        }
+    }
+
+    /// Deletes the specified label, if it exists, from the current label set.
+    pub fn delete<K>(&self, key: K)
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe { sys::delete(key.as_ref().into()) }
+    }
+
+    /// Gets the label corresponding to a key on the current label set,
+    /// or `None` if no such label exists.
+    pub fn get<K>(&self, key: K) -> Option<Vec<u8>>
+    where
+        K: AsRef<[u8]>,
+    {
+        unsafe {
+            sys::get(key.as_ref().into()).as_ref().map(|lbl| {
+                let v = slice::from_raw_parts(lbl.value.buf, lbl.value.len);
+                v.to_vec()
+            })
+        }
+    }
+}
+
+impl fmt::Debug for CurrentLabelset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let current = unsafe { sys::labelset_current() };
+        if current.is_null() {
+            panic!("no current labelset");
+        }
+        debug_labelset(f, current)
+    }
+}
+
 /// Set the label for the specified key to the specified
 /// value while the given function is running.
 ///
@@ -256,13 +384,13 @@ where
     }
     struct Guard<'a> {
         k: &'a [u8],
-        old_v: Option<sys::String>,
+        old_v: Option<sys::OwnedString>,
     }
 
     impl<'a> Drop for Guard<'a> {
         fn drop(&mut self) {
             if let Some(old_v) = std::mem::take(&mut self.old_v) {
-                let errno = unsafe { sys::set(self.k.into(), old_v) };
+                let errno = unsafe { sys::set(self.k.into(), *old_v) };
                 if errno != 0 {
                     panic!("corruption in custom labels library: errno {errno}");
                 }
@@ -272,7 +400,7 @@ where
         }
     }
 
-    let old_v = unsafe { sys::get(k.as_ref().into()).as_ref() }.map(|lbl| lbl.value.clone());
+    let old_v = unsafe { sys::get(k.as_ref().into()).as_ref() }.map(|lbl| lbl.value.to_owned());
     let _g = Guard {
         k: k.as_ref(),
         old_v,
