@@ -164,7 +164,7 @@ static int push(custom_labels_string_t key, custom_labels_string_t value) {
 static int labelset_push(custom_labels_labelset_t *ls, custom_labels_string_t key, custom_labels_string_t value) {
         if (ls->count == ls->capacity) {
                 size_t new_cap = MAX(2 * ls->capacity, 1);
-                ls->storage = reallocarray(ls->storage, new_cap, sizeof(custom_labels_label_t));
+                ls->storage = realloc(ls->storage, new_cap * sizeof(custom_labels_label_t));
                 ls->capacity = new_cap;
                 if (!ls->storage)
                         return errno;
