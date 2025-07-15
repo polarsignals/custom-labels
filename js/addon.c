@@ -39,8 +39,12 @@ struct labelset_ref {
 #include <stdio.h>
 
 static void pdbg(const struct labelset_ref *ref) {
-  custom_labels_labelset_print_debug(ref->target->native);
-  fprintf(stderr, " %p -> %p -> %p %d\n", ref, ref->target, ref->target->native, ref->target->n_refs);
+  custom_labels_string_t out;
+  int err = custom_labels_labelset_debug_string(ref->target->native, &out);
+  if (!err)
+    fprintf(stderr, "error printing: %d\n", err);
+  else
+    fprintf(stderr, "%.*s %p -> %p -> %p %d\n", (int)out.len, out.buf, ref, ref->target, ref->target->native, ref->target->n_refs);
 }
 
 void LabelSetRefFz(napi_env env, void *finalize_data, void *finalize_hint) {
