@@ -61,6 +61,8 @@
 use std::ptr::NonNull;
 use std::{fmt, slice};
 
+pub mod sets;
+
 /// Low-level interface to the underlying C library.
 pub mod sys {
     #[allow(non_camel_case_types)]
