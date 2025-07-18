@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "hashmap.h"
+#include "util.h"
+
 
 // From https://stackoverflow.com/a/12996028/242814
 // which got it from public-domain code.
@@ -60,22 +62,22 @@ static _bucket *_bucket_for_key(custom_labels_hashmap_t *self, uint64_t key) {
 }
 
 static void _rehash(custom_labels_hashmap_t *self) {
-  uint64_t old_capacity = _capacity(self);
-  ++self->log2_capacity;
-  uint64_t new_capacity = _capacity(self);
-  _bucket *old_buckets = self->buckets;
-  self->buckets = calloc(new_capacity, sizeof(_bucket));
+  custom_labels_hashmap_t new;
+  new.size = self->size;
+  new.log2_capacity = self->log2_capacity + 1;
+  new.buckets = calloc(_capacity(&new), sizeof(_bucket));
 
-  for (int i = 0; i < old_capacity; ++i) {
-    _bucket *b = &old_buckets[i];
+  for (int i = 0; i < _capacity(self); ++i) {
+    _bucket *b = &self->buckets[i];
     if (b->value) {
-      _bucket *new_b = _bucket_for_key(self, b->key);
+      _bucket *new_b = _bucket_for_key(&new, b->key);
       assert(new_b && new_b->key == b->key);
       new_b->value = b->value;
     }
   }
 
-  free(old_buckets);
+  BARRIER;
+  *self = new;
 }
 
 // Inserts a key-value pair into the hashmap.
@@ -130,7 +132,7 @@ void *custom_labels_hm_delete(custom_labels_hashmap_t *self, uint64_t key) {
     int ideal_bucket = _hash(next->key) % cap;
     // if the path from ideal_bucket to next crosses the blank, we need
     // to move it. This is equivalent to considering the blank to be pos. 0
-    // and checking if ideal_bucket is after next.
+    // and checking if ideal_bucket is after next (or actually on the blank).
     int ideal_bucket_rotated = (ideal_bucket + cap - blank_pos) % cap;
     int first_unknown_rotated = (first_unknown + cap - blank_pos) % cap;
     bool crosses = first_unknown_rotated < ideal_bucket_rotated || ideal_bucket_rotated == 0;
@@ -140,6 +142,7 @@ void *custom_labels_hm_delete(custom_labels_hashmap_t *self, uint64_t key) {
     }
     first_unknown = (first_unknown + 1) % cap;
   }
+  BARRIER;
   self->buckets[blank_pos] = (_bucket){0};
 
   return old;
