@@ -58,10 +58,8 @@
 //! If you work on another profiler that also supports this format, [send us a PR](https://github.com/polarsignals/custom-labels)
 //! to update this list!
 
-use std::ptr::NonNull;
+use std::ptr::{null_mut, NonNull};
 use std::{fmt, slice};
-
-pub mod sets;
 
 /// Low-level interface to the underlying C library.
 pub mod sys {
@@ -133,19 +131,22 @@ pub mod sys {
         }
     }
 
+    pub use c::custom_labels_clone as clone;
+    pub use c::custom_labels_current as current;
+    pub use c::custom_labels_debug_string as debug_string;
     pub use c::custom_labels_delete as delete;
+    pub use c::custom_labels_free as free;
     pub use c::custom_labels_get as get;
+    pub use c::custom_labels_new as new;
+    pub use c::custom_labels_replace as replace;
+    pub use c::custom_labels_run_with as run_with;
     pub use c::custom_labels_set as set;
 
-    pub use c::custom_labels_labelset_clone as labelset_clone;
-    pub use c::custom_labels_labelset_current as labelset_current;
-    pub use c::custom_labels_labelset_debug_string as labelset_debug_string;
-    pub use c::custom_labels_labelset_delete as labelset_delete;
-    pub use c::custom_labels_labelset_free as labelset_free;
-    pub use c::custom_labels_labelset_get as labelset_get;
-    pub use c::custom_labels_labelset_new as labelset_new;
-    pub use c::custom_labels_labelset_replace as labelset_replace;
-    pub use c::custom_labels_labelset_set as labelset_set;
+    pub mod careful {
+        pub use super::c::custom_labels_careful_delete as delete;
+        pub use super::c::custom_labels_careful_run_with as run_with;
+        pub use super::c::custom_labels_careful_set as set;
+    }
 }
 
 /// Utilities for build scripts
@@ -174,7 +175,7 @@ impl Labelset {
 
     /// Create a new label set with the specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
-        let raw = unsafe { sys::labelset_new(capacity) };
+        let raw = unsafe { sys::new(capacity) };
         let raw = NonNull::new(raw).expect("failed to allocate labelset");
         Self { raw }
     }
@@ -187,11 +188,11 @@ impl Labelset {
 
     /// Create a new label set by cloning the current one, if it exists,
     pub fn try_clone_from_current() -> Option<Self> {
-        let raw = unsafe { sys::labelset_current() };
+        let raw = unsafe { sys::current() };
         if raw.is_null() {
             None
         } else {
-            let raw = unsafe { sys::labelset_clone(raw) };
+            let raw = unsafe { sys::clone(raw) };
             let raw = NonNull::new(raw).expect("failed to clone labelset");
             Some(Self { raw })
         }
@@ -208,11 +209,11 @@ impl Labelset {
 
         impl Drop for Guard {
             fn drop(&mut self) {
-                unsafe { sys::labelset_replace(self.old) };
+                unsafe { sys::replace(self.old) };
             }
         }
 
-        let old = unsafe { sys::labelset_replace(self.raw.as_ptr()) };
+        let old = unsafe { sys::replace(self.raw.as_ptr()) };
         let _guard = Guard { old };
         f()
     }
@@ -224,10 +225,11 @@ impl Labelset {
         V: AsRef<[u8]>,
     {
         let errno = unsafe {
-            sys::labelset_set(
+            sys::set(
                 self.raw.as_ptr(),
                 key.as_ref().into(),
                 value.as_ref().into(),
+                null_mut(),
             )
         };
         if errno != 0 {
@@ -240,7 +242,7 @@ impl Labelset {
     where
         K: AsRef<[u8]>,
     {
-        unsafe { sys::labelset_delete(self.raw.as_ptr(), key.as_ref().into()) }
+        unsafe { sys::delete(self.raw.as_ptr(), key.as_ref().into()) }
     }
 
     /// Gets the label corresponding to a key on the given label set,
@@ -250,7 +252,7 @@ impl Labelset {
         K: AsRef<[u8]>,
     {
         unsafe {
-            sys::labelset_get(self.raw.as_ptr(), key.as_ref().into())
+            sys::get(self.raw.as_ptr(), key.as_ref().into())
                 .as_ref()
                 .map(|lbl| slice::from_raw_parts(lbl.value.buf, lbl.value.len))
         }
@@ -265,13 +267,13 @@ impl Default for Labelset {
 
 impl Drop for Labelset {
     fn drop(&mut self) {
-        unsafe { sys::labelset_free(self.raw.as_ptr()) }
+        unsafe { sys::free(self.raw.as_ptr()) }
     }
 }
 
 impl Clone for Labelset {
     fn clone(&self) -> Self {
-        let raw = unsafe { sys::labelset_clone(self.raw.as_ptr()) };
+        let raw = unsafe { sys::clone(self.raw.as_ptr()) };
         let raw = NonNull::new(raw).expect("failed to clone labelset");
         Self { raw }
     }
@@ -297,7 +299,7 @@ impl fmt::Debug for Labelset {
 
 fn debug_labelset(f: &mut fmt::Formatter<'_>, labelset: *const sys::Labelset) -> fmt::Result {
     let mut cstr = sys::OwnedString::new();
-    let errno = unsafe { sys::labelset_debug_string(labelset, &mut *cstr) };
+    let errno = unsafe { sys::debug_string(labelset, &mut *cstr) };
     if errno != 0 {
         panic!("out of memory");
     }
@@ -325,10 +327,17 @@ impl CurrentLabelset {
         K: AsRef<[u8]>,
         V: AsRef<[u8]>,
     {
-        if unsafe { sys::labelset_current() }.is_null() {
+        if unsafe { sys::current() }.is_null() {
             panic!("no current label set");
         }
-        let errno = unsafe { sys::set(key.as_ref().into(), value.as_ref().into()) };
+        let errno = unsafe {
+            sys::set(
+                sys::current(),
+                key.as_ref().into(),
+                value.as_ref().into(),
+                null_mut(),
+            )
+        };
         if errno != 0 {
             panic!("out of memory");
         }
@@ -339,7 +348,7 @@ impl CurrentLabelset {
     where
         K: AsRef<[u8]>,
     {
-        unsafe { sys::delete(key.as_ref().into()) }
+        unsafe { sys::delete(sys::current(), key.as_ref().into()) }
     }
 
     /// Gets the label corresponding to a key on the current label set,
@@ -349,17 +358,19 @@ impl CurrentLabelset {
         K: AsRef<[u8]>,
     {
         unsafe {
-            sys::get(key.as_ref().into()).as_ref().map(|lbl| {
-                let v = slice::from_raw_parts(lbl.value.buf, lbl.value.len);
-                v.to_vec()
-            })
+            sys::get(sys::current(), key.as_ref().into())
+                .as_ref()
+                .map(|lbl| {
+                    let v = slice::from_raw_parts(lbl.value.buf, lbl.value.len);
+                    v.to_vec()
+                })
         }
     }
 }
 
 impl fmt::Debug for CurrentLabelset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let current = unsafe { sys::labelset_current() };
+        let current = unsafe { sys::current() };
         if current.is_null() {
             panic!("no current labelset");
         }
@@ -372,6 +383,8 @@ impl fmt::Debug for CurrentLabelset {
 ///
 /// All labels are thread-local: setting a label on one thread
 /// has no effect on its value on any other thread.
+// TODO: rewrite this to use custom_labels_run_with, via
+// https://docs.rs/ffi_helpers/latest/ffi_helpers/fn.split_closure.html
 pub fn with_label<K, V, F, Ret>(k: K, v: V, f: F) -> Ret
 where
     K: AsRef<[u8]>,
@@ -379,9 +392,9 @@ where
     F: FnOnce() -> Ret,
 {
     unsafe {
-        if sys::labelset_current().is_null() {
-            let l = sys::labelset_new(0);
-            sys::labelset_replace(l);
+        if sys::current().is_null() {
+            let l = sys::new(0);
+            sys::replace(l);
         }
     }
     struct Guard<'a> {
@@ -392,23 +405,31 @@ where
     impl<'a> Drop for Guard<'a> {
         fn drop(&mut self) {
             if let Some(old_v) = std::mem::take(&mut self.old_v) {
-                let errno = unsafe { sys::set(self.k.into(), *old_v) };
+                let errno = unsafe { sys::set(sys::current(), self.k.into(), *old_v, null_mut()) };
                 if errno != 0 {
                     panic!("corruption in custom labels library: errno {errno}");
                 }
             } else {
-                unsafe { sys::delete(self.k.into()) };
+                unsafe { sys::delete(sys::current(), self.k.into()) };
             }
         }
     }
 
-    let old_v = unsafe { sys::get(k.as_ref().into()).as_ref() }.map(|lbl| lbl.value.to_owned());
+    let old_v = unsafe { sys::get(sys::current(), k.as_ref().into()).as_ref() }
+        .map(|lbl| lbl.value.to_owned());
     let _g = Guard {
         k: k.as_ref(),
         old_v,
     };
 
-    let errno = unsafe { sys::set(k.as_ref().into(), v.as_ref().into()) };
+    let errno = unsafe {
+        sys::set(
+            sys::current(),
+            k.as_ref().into(),
+            v.as_ref().into(),
+            null_mut(),
+        )
+    };
     if errno != 0 {
         panic!("corruption in custom labels library: errno {errno}")
     }
@@ -422,6 +443,8 @@ where
 /// `i` is an iterator of key-value pairs.
 ///
 /// The effect is the same as repeatedly nesting calls to the singular [`with_label`].
+// TODO: rewrite this to use custom_labels_run_with, via
+// https://docs.rs/ffi_helpers/latest/ffi_helpers/fn.split_closure.html
 pub fn with_labels<I, K, V, F, Ret>(i: I, f: F) -> Ret
 where
     I: IntoIterator<Item = (K, V)>,
