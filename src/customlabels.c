@@ -375,7 +375,7 @@ custom_labels_labelset_t *custom_labels_current() {
 // TODO - does it matter that these are not applied atomically? The
 // profiler can see a torn state... (some applied, some not).
 int custom_labels_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *labels, int n, void *(*cb)(void *), void *data, void **out) {
-        // NB: It's to call this on the current set, since
+        // NB: It's ok to call this on the current set, since
         // the `custom_labels_set` functions will forward to the careful ones.
         // But rewrite this to forward to custom_labels_careful_run_with
         // if we ever change it and need to do any other mutating operations.

@@ -25,7 +25,8 @@
             "sources": [
                 "js/addon.c",
                 "js/addon_node.c",
-                "src/customlabels.c"
+                "src/customlabels.c",
+                "src/hashmap.c"
             ],
         }
     ]

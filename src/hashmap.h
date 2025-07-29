@@ -8,7 +8,10 @@ struct _hm;
 typedef struct _hm custom_labels_hashmap_t;
 
 // Initialize a new hashmap
-void custom_labels_hm_init(custom_labels_hashmap_t *self);
+custom_labels_hashmap_t *custom_labels_hm_alloc();
+
+// Free a hashmap
+void custom_labels_hm_free(custom_labels_hashmap_t *self);
 
 // Insert a key-value pair into the hashmap
 // Precondition: value must not be null (use delete function to remove entries)

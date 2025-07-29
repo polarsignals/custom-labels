@@ -1,365 +1,279 @@
 // addon.c
 #include "addon.h"
-#include "js_native_api.h"
 #include "../src/customlabels.h"
+#include "../src/hashmap.h"
+#include "js_native_api.h"
 
 #include <assert.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
-#define NODE_API_CALL(env, call)                                  \
-  do {                                                            \
-    napi_status status = (call);                                  \
-    if (status != napi_ok) {                                      \
-      const napi_extended_error_info* error_info = NULL;          \
-      napi_get_last_error_info((env), &error_info);               \
-      const char* err_message = error_info->error_message;        \
-      bool is_pending;                                            \
-      napi_is_exception_pending((env), &is_pending);              \
-      /* If an exception is already pending, don't rethrow it */  \
-      if (!is_pending) {                                          \
-        const char* message = (err_message == NULL)               \
-            ? "empty error message"                               \
-            : err_message;                                        \
-        napi_throw_error((env), NULL, message);                   \
-      }                                                           \
-      return NULL;                                                \
-    }                                                             \
-  } while(0)
-
-struct ref_counted_labelset {
-  custom_labels_labelset_t *native;
-  unsigned n_refs;
-};
-
-struct labelset_ref {
-  struct ref_counted_labelset *target;
-};
-
-#include <stdio.h>
-
-static void pdbg(const struct labelset_ref *ref) {
-  custom_labels_string_t out;
-  int err = custom_labels_labelset_debug_string(ref->target->native, &out);
-  if (!err)
-    fprintf(stderr, "error printing: %d\n", err);
-  else
-    fprintf(stderr, "%.*s %p -> %p -> %p %d\n", (int)out.len, out.buf, ref, ref->target, ref->target->native, ref->target->n_refs);
+// returns true if success; otherwise, throws
+// an exception if one is not already pending and
+// then returns false.
+static bool check_status(napi_env env, napi_status status) {
+  if (status != napi_ok) {
+    const napi_extended_error_info *error_info = NULL;
+    napi_get_last_error_info(env, &error_info);
+    const char *err_message = error_info->error_message;
+    bool is_pending;
+    napi_is_exception_pending(env, &is_pending);
+    /* If an exception is already pending, don't rethrow it */
+    if (!is_pending) {
+      const char *message =
+          (err_message == NULL) ? "empty error message" : err_message;
+      napi_throw_error((env), NULL, message);
+    }
+  }
+  return status == napi_ok;
 }
 
-void LabelSetRefFz(napi_env env, void *finalize_data, void *finalize_hint) {
-  struct labelset_ref *ref = (struct labelset_ref *)finalize_data;
-  /* fprintf(stderr, "Fz: "); */
-  /* pdbg(ref); */
-  if (!--ref->target->n_refs) {
-    custom_labels_labelset_free(ref->target->native);
-    free(ref->target);
-  }  
-  free(ref);
-}
-
-static napi_ref labelset_ref_ctor_ref = NULL;
-
-static napi_value LabelSetRefCtor(napi_env env, napi_callback_info info) {
-  napi_value this;
-  size_t argc = 1;
-  napi_value arg = NULL;
-  NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, &arg, &this, NULL));
-  
-  bool isinstance;
-  napi_value ctor;
-  NODE_API_CALL(env, napi_get_reference_value(env, labelset_ref_ctor_ref, &ctor));
-  NODE_API_CALL(env, napi_instanceof(env, this, ctor, &isinstance));
-  if (!isinstance) {
-    napi_throw_error(env, NULL, "Must be called with 'new'");
-    return NULL;
-  }
-
-  struct ref_counted_labelset *target = NULL;
-  if (argc > 0) {
-    struct labelset_ref *parent = NULL;
-    NODE_API_CALL(env, napi_instanceof(env, arg, ctor, &isinstance));
-    if (!isinstance) {
-      napi_throw_error(env, NULL, "arg must be of type LabelSetRef");
-      return NULL;
-    }
-    NODE_API_CALL(env, napi_unwrap(env, arg, (void **)&parent));
-    target = parent->target;
-  }
-  if (!target) {
-    target = (struct ref_counted_labelset *)malloc(sizeof(struct ref_counted_labelset));
-    if (!target) {
-      napi_throw_error(env, NULL, "allocation failed!");
-      return NULL;
-    }
-    target->n_refs = 0;
-    target->native = custom_labels_labelset_new(0);
-    if (!target->native) {
-      napi_throw_error(env, NULL, "allocation failed!");
-      free(target);
-      return NULL;
-    }
-  }
-  struct labelset_ref *ref = malloc(sizeof(struct labelset_ref));
-  if (!ref) {
-    if (target->n_refs == 0) {
-      custom_labels_labelset_free(target->native);
-      free(target);
-    }
-    napi_throw_error(env, NULL, "allocation failed!");
-    return NULL;
-  }
-  ref->target = target;
-  ++target->n_refs;
-  
-  NODE_API_CALL(env, napi_wrap(env, this, ref, LabelSetRefFz, NULL, NULL));
-
-  return this;
-}
-
-static int
-setOrDeleteValue(napi_env env, struct labelset_ref *ref, custom_labels_string_t key, custom_labels_string_t value) {
-  assert(ref->target->n_refs > 0);
-  // if there are other references to this label set, we need
-  // to clone it here, so they don't get clobbered.
-  bool should_clone = (ref->target->n_refs != 1);
-  // if the given set is already installed, and we're about to clone it,
-  // we need to install the new one after.
-  bool must_install = (ref->target->native == custom_labels_current_set) && should_clone;
-  struct ref_counted_labelset *old_target = NULL;
-  if (should_clone) {
-    --ref->target->n_refs;
-    custom_labels_labelset_t *new_native = custom_labels_labelset_clone(ref->target->native);
-    if (!new_native) {
-      napi_throw_error(env, NULL, "allocation failed!");
-      return errno;
-    }
-    old_target = ref->target;
-    struct ref_counted_labelset *new_target = malloc(sizeof(struct ref_counted_labelset));
-    if (!new_target) {
-      custom_labels_labelset_free(new_native);
-      napi_throw_error(env, NULL, "allocation failed!");
-      return errno;
-    }
-    new_target->native = new_native;
-    new_target->n_refs = 1;
-    ref->target = new_target;
-  }
-  assert(should_clone == (bool)old_target);
-  if (value.buf) {
-    int err = custom_labels_labelset_set(ref->target->native, key, value);
-    if (err) {
-      // if we cloned, let's get rid of the clone and put back the old target.
-      if (should_clone) {
-        custom_labels_labelset_free(ref->target->native);
-        free(ref->target);
-        ref->target = old_target;
-        ++ref->target->n_refs;
-      }
-      napi_throw_error(env, NULL, "allocation failed!");
-      return err;
-    }
-  }
-  else {
-    custom_labels_labelset_delete(ref->target->native, key);
-  }
-  if (must_install) {
-    custom_labels_labelset_replace(ref->target->native);
-  }
-  return 0;
-}
-
-#define THISCHK()                                                       \
-  do {                                                                  \
-    bool isinstance;                                                    \
-    napi_value ctor;                                                    \
-    NODE_API_CALL(env, napi_get_reference_value(env, labelset_ref_ctor_ref, &ctor)); \
-    NODE_API_CALL(env, napi_instanceof(env, this, ctor, &isinstance));  \
-    if (!isinstance) {                                                  \
-      napi_throw_error(env, NULL, "this must be of type LabelSetRef");  \
-      return NULL;                                                      \
-    }                                                                   \
+#define NODE_API_CALL(env, call)                                               \
+  do {                                                                         \
+    napi_status status = (call);                                               \
+    if (!check_status((env), status)) {                                        \
+      return NULL;                                                             \
+    }                                                                          \
   } while (0)
 
-// setValue(k, v)
-// clones the underlying LS if there are other references to it,
-// to avoid clobbering those. Otherwise, if we own it exclusively,
-// just updates the value.
-static napi_value
-LabelSetSetValue(napi_env env, napi_callback_info info) {
-  // XXX error handling (in entire file)
-  napi_value this;
-  size_t argc = 2;
-  napi_value argv[2];
-  NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, &this, NULL));
-  THISCHK();
-  if (argc != 2) {
-    napi_throw_error(env, NULL, "setValue(k, v)");
-    return NULL;
-  }  
-  
-  char kbuf[64 + 1]; // +1 for null terminator
-  size_t klen;
-  char vbuf[64 + 1];
-  size_t vlen;
-  NODE_API_CALL(env, napi_get_value_string_utf8(env, argv[0], kbuf, sizeof(kbuf), &klen));
-  NODE_API_CALL(env, napi_get_value_string_utf8(env, argv[1], vbuf, sizeof(vbuf), &vlen));
+// should this be per-isolate?
+__thread custom_labels_hashmap_t *custom_labels_async_hashmap;
 
-  struct labelset_ref *ref;
-  NODE_API_CALL(env, napi_unwrap(env, this, (void **)&ref));
-  // if the given set is already installed, and we're about to clone it,
-  // we need to install the new one after.
-  int err = setOrDeleteValue(env, ref, (custom_labels_string_t){klen, (unsigned char *)kbuf }, (custom_labels_string_t){vlen, (unsigned char *)vbuf});
-  if (err) {
-    napi_throw_error(env, NULL, "failed to set value");    
+custom_labels_hashmap_t *btv_getit() {
+  return custom_labels_async_hashmap;
+}
+
+#define hm custom_labels_async_hashmap
+
+#define hm_alloc custom_labels_hm_alloc
+#define hm_free custom_labels_hm_free
+#define hm_insert custom_labels_hm_insert
+#define hm_get custom_labels_hm_get
+#define hm_delete custom_labels_hm_delete
+
+typedef struct {
+  custom_labels_labelset_t *ls;
+  unsigned refs;
+} labelset_rc;
+
+static void init() { hm = hm_alloc(); }
+
+typedef enum { SUCCESS, ALLOC_FAILED, CHILD_ALREADY_EXISTED } error_t;
+
+static void unref(labelset_rc *rc) {
+  if (rc && !--rc->refs)
+    free(rc);
+}
+
+static error_t ensure_init() {
+  if (!hm)
+    init();
+  if (!hm)
+    return ALLOC_FAILED;
+  return SUCCESS;
+}
+
+static error_t propagate(uint64_t parent, uint64_t child) {
+  int error;
+  if ((error = ensure_init()))
+    return error;
+  labelset_rc *parent_rc = hm_get(hm, parent);
+  if (parent_rc) {
+    ++parent_rc->refs;
+    labelset_rc *old = hm_insert(hm, child, parent_rc);
+    if (old) {
+      unref(old);
+      return CHILD_ALREADY_EXISTED;
+    }
   }
+  return SUCCESS;
+}
+
+static error_t destroy(uint64_t id) {
+  int error;
+  if ((error = ensure_init()))
+    return error;
+  labelset_rc *rc = hm_delete(hm, id);
+  unref(rc);
+  return SUCCESS;
+}
+
+static napi_value Destroy(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv;
+  NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, &argv, NULL, NULL));
+  if (argc != 1) {
+    napi_throw_error(env, NULL, "destroy(async_id)");
+    return NULL;
+  }
+
+  uint64_t async_id;
+  NODE_API_CALL(env, napi_get_value_int64(env, argv, (int64_t *)&async_id));
+
+  error_t err = destroy(async_id);
+  // TODO - error handling
+  assert(!err);
   return NULL;
 }
 
-static napi_value
-LabelSetGetValue(napi_env env, napi_callback_info info) {
-  napi_value this;
-  size_t argc = 1;
-  napi_value argv[1];
-  NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, &this, NULL));
-  THISCHK();
-  if (argc != 1) {
-    napi_throw_error(env, NULL, "getValue(k)");
+static napi_value Propagate(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
+  if (argc != 2) {
+    napi_throw_error(env, NULL, "propagate(parent_id, child_id)");
     return NULL;
   }
-  struct labelset_ref *ref;
-  NODE_API_CALL(env, napi_unwrap(env, this, (void **)&ref));
 
-  char kbuf[64 + 1]; // +1 for null terminator
-  size_t klen;
-  NODE_API_CALL(env, napi_get_value_string_utf8(env, argv[0], kbuf, sizeof(kbuf), &klen));
-  const custom_labels_label_t *lbl = custom_labels_labelset_get(ref->target->native, (custom_labels_string_t){klen, (unsigned char *)kbuf});
-  if (!lbl)
-    return NULL;
+  uint64_t parent_id, child_id;
+  NODE_API_CALL(env, napi_get_value_int64(env, argv[0], (int64_t *)&parent_id));
+  NODE_API_CALL(env, napi_get_value_int64(env, argv[1], (int64_t *)&child_id));
 
+  error_t err = propagate(parent_id, child_id);
+  // TODO - error handling
+  assert(!err);
+  return NULL;
+}
+
+
+#define MAX_LABELS 10
+#define MAX_KEY_SIZE 16
+#define MAX_VAL_SIZE 48
+
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
+
+typedef struct {
+  napi_env env;
+  napi_value function;
+} cb_data;
+
+// napi_status napi_get_global(napi_env env, napi_value* result)
+static void *cb(void *data_) {
+  cb_data *data = data_;
+  napi_value global;
+  napi_env env = data->env;
+  napi_value func = data->function;
+  NODE_API_CALL(env, napi_get_global(env, &global));
   napi_value result;
-  NODE_API_CALL(env, napi_create_string_utf8(env, (const char *)lbl->value.buf, lbl->value.len, &result));
+  NODE_API_CALL(env, napi_call_function(env, global, func, 0, NULL, &result));
+
   return result;
 }
 
-static napi_value
-LabelSetDeleteValue(napi_env env, napi_callback_info info) {
-  napi_value this;
-  size_t argc = 1;
-  napi_value argv[1];
-  NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, &this, NULL));
-  THISCHK();
-  if (argc != 1) {
-    napi_throw_error(env, NULL, "deleteValue(k)");
-    return NULL;
-  }
-  struct labelset_ref *ref;
-  NODE_API_CALL(env, napi_unwrap(env, this, (void **)&ref));
-
-  char kbuf[64 + 1]; // +1 for null terminator
-  size_t klen;
-  NODE_API_CALL(env, napi_get_value_string_utf8(env, argv[0], kbuf, sizeof(kbuf), &klen));
-
-  int err = setOrDeleteValue(env, ref, (custom_labels_string_t){klen, (unsigned char *)kbuf}, (custom_labels_string_t) { 0, NULL});
-  if (err) {
-    napi_throw_error(env, NULL, "failed to delete value");
-  }    
-
-  return NULL;
-}
-
-static napi_value
-LabelSetInstall(napi_env env, napi_callback_info info) {
-  napi_value this;
-  NODE_API_CALL(env, napi_get_cb_info(env, info, NULL, NULL, &this, NULL));
-  struct labelset_ref *ref;
-  NODE_API_CALL(env, napi_unwrap(env, this, (void **)&ref));
-
-  custom_labels_labelset_replace(ref->target->native);
-  return NULL;
-}
-
-static napi_value
-LabelSetPrintDebug(napi_env env, napi_callback_info info) {
-  napi_value this;
-  NODE_API_CALL(env, napi_get_cb_info(env, info, NULL, NULL, &this, NULL));
-  struct labelset_ref *ref;
-  NODE_API_CALL(env, napi_unwrap(env, this, (void **)&ref));
-
-  pdbg(ref);
-  return NULL;
-}
-
-
-napi_value ClearLabelSet(napi_env env, napi_callback_info info) {
-  custom_labels_labelset_replace(NULL);
-  return NULL;
-}
-
-napi_value Log(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
+static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
+  void *retval = NULL;
+  ensure_init();
+  const size_t max_args = MAX_LABELS * 2 + 2;
+  size_t argc = max_args;
+  napi_value argv[max_args];
   NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
-  if (argc != 1) {
-    napi_throw_error(env, NULL, "log(s)");
+  if (argc < 2 || argc % 2) {
+    napi_throw_error(env, NULL, "withLabels(f, k, v, ...)");
     return NULL;
   }
-  char buf[1024];
-  size_t len;
-  NODE_API_CALL(env, napi_get_value_string_utf8(env, argv[0], buf, sizeof(buf), &len));
-  fprintf(stderr, "%s", buf);
+  if (argc > max_args) {
+    napi_throw_error(env, NULL, "max " STR(MAX_LABELS) " labels per call");
+    return NULL;
+  }
+  uint64_t async_id;
+  NODE_API_CALL(env, napi_get_value_int64(env, argv[0], (int64_t *)&async_id));
 
-  return NULL;
+  size_t n_labels = (argc - 1) / 2;
+  custom_labels_label_t *labels = malloc(n_labels * sizeof *labels);
+  size_t i;
+  for (i = 0; i < n_labels; ++i) {
+    labels[i].key.buf = malloc(MAX_KEY_SIZE + 1);
+    labels[i].value.buf = malloc(MAX_VAL_SIZE + 1);
+    if (!labels[i].key.buf || !labels[i].value.buf) {
+      free((void *)labels[i].key.buf);
+      free((void *)labels[i].value.buf);
+      napi_throw_error(env, NULL, "alloc failed");
+      goto cleanup;
+    }
+    napi_status status = napi_get_value_string_utf8(
+        env, argv[2 + 2 * i], (char *)labels[i].key.buf, MAX_KEY_SIZE,
+        &labels[i].key.len);
+    if (!check_status(env, status)) {
+      free((void *)labels[i].key.buf);
+      free((void *)labels[i].value.buf);
+      goto cleanup;
+    }
+    status = napi_get_value_string_utf8(env, argv[3 + 2 * i],
+                                        (char *)labels[i].value.buf,
+                                        MAX_VAL_SIZE, &labels[i].value.len);
+    if (!check_status(env, status)) {
+      free((void *)labels[i].key.buf);
+      free((void *)labels[i].value.buf);
+      goto cleanup;
+    }
+  }
+
+  // TODO: should the HM have a get_or_insert function ?
+  labelset_rc *rc = hm_get(hm, async_id);
+  custom_labels_labelset_t *ls = NULL;
+  if (!rc) {
+    rc = malloc(sizeof *rc);
+    // TODO handle alloc error
+    rc->refs = 1;
+    rc->ls = ls = custom_labels_new(n_labels);
+    // TODO handle alloc error
+    hm_insert(hm, async_id, rc);
+  } else if (rc->refs > 1) {
+    --rc->refs;
+    custom_labels_labelset_t *old = rc->ls;
+    rc = malloc(sizeof *rc);
+    // TODO handle alloc error
+    rc->refs = 1;
+    rc->ls = ls = custom_labels_clone(old);
+    // TODO handle alloc error
+    hm_insert(hm, async_id, rc);
+  } else {
+    ls = rc->ls;
+  }
+
+  cb_data d = (cb_data){env, argv[1]};
+
+  int error =
+      custom_labels_careful_run_with(ls, labels, n_labels, cb, &d, &retval);
+  // TODO fix this
+  assert(!error);
+
+cleanup:
+  for (size_t j = 0; j < i; ++j) {
+    free((void *)labels[j].key.buf);
+    free((void *)labels[j].value.buf);
+  }
+  free(labels);
+
+  return retval;
 }
-
 
 napi_value create_addon(napi_env env) {
   napi_value result;
   NODE_API_CALL(env, napi_create_object(env, &result));
 
-  napi_value clear_label_set_function;
-  NODE_API_CALL(env, napi_create_function(env,
-                                          "clearLabelSet",
-                                          NAPI_AUTO_LENGTH,
-                                          ClearLabelSet,
-                                          NULL,
-                                          &clear_label_set_function));
+  napi_value with_labels_function;
+  NODE_API_CALL(env, napi_create_function(env, "withLabelsInternal",
+                                          NAPI_AUTO_LENGTH, WithLabelsInternal,
+                                          NULL, &with_labels_function));
+  NODE_API_CALL(env, napi_set_named_property(env, result, "withLabelsInternal",
+                                             with_labels_function));
 
-  NODE_API_CALL(env, napi_set_named_property(env,
-                                             result,
-                                             "clearLabelSet",
-                                             clear_label_set_function));
+  napi_value propagate_function;
+  NODE_API_CALL(env, napi_create_function(env, "propagate",
+                                          NAPI_AUTO_LENGTH, Propagate,
+                                          NULL, &propagate_function));
+  NODE_API_CALL(env, napi_set_named_property(env, result, "propagate",
+                                             propagate_function));
 
-  napi_value log_function;
-  NODE_API_CALL(env, napi_create_function(env,
-                                          "log",
-                                          NAPI_AUTO_LENGTH,
-                                          Log,
-                                          NULL,
-                                          &log_function));
+  napi_value destroy_function;
+  NODE_API_CALL(env, napi_create_function(env, "destroy",
+                                          NAPI_AUTO_LENGTH, Destroy,
+                                          NULL, &destroy_function));
+  NODE_API_CALL(env, napi_set_named_property(env, result, "destroy",
+                                             destroy_function));  
 
-  NODE_API_CALL(env, napi_set_named_property(env,
-                                             result,
-                                             "log",
-                                             log_function));
-  
-  napi_value labelset_ref;
-
-  napi_property_descriptor properties[] = {
-    { "setValue", NULL, LabelSetSetValue, NULL, NULL, NULL, napi_default, NULL },
-    { "getValue", NULL, LabelSetGetValue, NULL, NULL, NULL, napi_default, NULL },
-    { "deleteValue", NULL, LabelSetDeleteValue, NULL, NULL, NULL, napi_default, NULL },
-    { "install", NULL, LabelSetInstall, NULL, NULL, NULL, napi_default, NULL },
-    { "printDebug", NULL, LabelSetPrintDebug, NULL, NULL, NULL, napi_default, NULL },
-  };
-  
-  NODE_API_CALL(env, napi_define_class(env, "LabelSetRef", NAPI_AUTO_LENGTH, LabelSetRefCtor,
-                                       NULL, sizeof(properties)/sizeof(properties[0]), properties, &labelset_ref));
-
-  NODE_API_CALL(env, napi_create_reference(env, labelset_ref, 1, &labelset_ref_ctor_ref));
-
-  NODE_API_CALL(env, napi_set_named_property(env, result, "LabelSetRef", labelset_ref));
-                                       
-  
   return result;
 }

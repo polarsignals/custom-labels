@@ -72,11 +72,26 @@ int custom_labels_debug_string(const custom_labels_labelset_t *ls, custom_labels
  * This function forwards to `custom_labels_careful_set` if `ls`
  * is the current set.
  *
+ * This function copies in the given strings and thus does not take
+ * ownership of the memory they point to.
+ *
  * SAFETY:
  * The caller must not pass a NULL value for key.buf
  *
  * Returns 0 on success, `errno` otherwise.
  */
+// TODO -- to avoid unnecessary copies, there should probably be
+// a few more versions of this function,
+// that take ownership of key and/or value instead of copying them in,
+// or that neither take ownership nor copy them in, and
+// don't delete them when resetting them, where the client
+// takes care that they are valid for as long as they're in the map.
+//
+// Actually, maybe the latter thing is only useful in run_with, and we could just
+// open-code that logic there. But I think the first part
+// (taking by either ownership or copying in) will be more generally important.
+//
+// This would be a lot easier in Rust FWIW.
 int custom_labels_set(custom_labels_labelset_t *ls, custom_labels_string_t key, custom_labels_string_t value, custom_labels_string_t *old_value_out);
 
 /**

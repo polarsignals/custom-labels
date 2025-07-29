@@ -150,8 +150,17 @@ void *custom_labels_hm_delete(custom_labels_hashmap_t *self, uint64_t key) {
 
 #define INITIAL_LOG2_CAPACITY 4
 
-void custom_labels_hm_init(custom_labels_hashmap_t *self) {
+custom_labels_hashmap_t *custom_labels_hm_alloc() {
+  custom_labels_hashmap_t *self = malloc(sizeof *self);
+  if (!self)
+    return NULL;
   self->log2_capacity = INITIAL_LOG2_CAPACITY;
   self->buckets = calloc(_capacity(self), sizeof(_bucket));
   self->size = 0;
+  return self;
+}
+
+void custom_labels_hm_free(custom_labels_hashmap_t *self) {
+  free(self->buckets);
+  free(self);
 }
