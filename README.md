@@ -44,6 +44,7 @@ custom-labels = "0.4"
 Then add the following line to your executable's `build.rs`:
 
 ``` rust
+#[cfg(not(target_os="macos"))]
 custom_labels::build::emit_build_instructions();
 ```
 
