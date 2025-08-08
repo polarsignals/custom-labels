@@ -14,7 +14,7 @@
                 }],
                 ['target_arch == "arm64"', {
                     "cflags": [
-                        "-ftls-model=global-dynamic",
+                        "-ftls-model=local-dynamic",
                         "-mtls-dialect=desc",
                         "-fPIC",
                         "-O3",

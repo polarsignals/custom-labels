@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 // returns true if success; otherwise, throws
 // an exception if one is not already pending and
@@ -42,6 +43,10 @@ __thread custom_labels_hashmap_t *custom_labels_async_hashmap;
 
 custom_labels_hashmap_t *btv_getit() {
   return custom_labels_async_hashmap;
+}
+static napi_value PrintCur(napi_env env, napi_callback_info info) {
+  fprintf(stderr, "%p\n", btv_getit());
+  return NULL;
 }
 
 #define hm custom_labels_async_hashmap
@@ -144,26 +149,34 @@ static napi_value Propagate(napi_env env, napi_callback_info info) {
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
-typedef struct {
-  napi_env env;
-  napi_value function;
-} cb_data;
-
-// napi_status napi_get_global(napi_env env, napi_value* result)
-static void *cb(void *data_) {
-  cb_data *data = data_;
-  napi_value global;
-  napi_env env = data->env;
-  napi_value func = data->function;
-  NODE_API_CALL(env, napi_get_global(env, &global));
-  napi_value result;
-  NODE_API_CALL(env, napi_call_function(env, global, func, 0, NULL, &result));
-
-  return result;
+static custom_labels_labelset_t *reify(uint64_t async_id, uint64_t capacity) {
+  custom_labels_labelset_t *ls;
+  // TODO: should the HM have a get_or_insert function ?
+  labelset_rc *rc = hm_get(hm, async_id);
+  if (!rc) {
+    rc = malloc(sizeof *rc);
+    // TODO handle alloc error
+    rc->refs = 1;
+    rc->ls = ls = custom_labels_new(capacity);
+    // TODO handle alloc error
+    hm_insert(hm, async_id, rc);
+  } else if (rc->refs > 1) {
+    --rc->refs;
+    custom_labels_labelset_t *old = rc->ls;
+    rc = malloc(sizeof *rc);
+    // TODO handle alloc error
+    rc->refs = 1;
+    rc->ls = ls = custom_labels_clone(old);
+    // TODO handle alloc error
+    hm_insert(hm, async_id, rc);
+  } else {
+    ls = rc->ls;
+  }
+  return ls;
 }
 
 static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
-  void *retval = NULL;
+  napi_value retval = NULL;
   ensure_init();
   const size_t max_args = MAX_LABELS * 2 + 2;
   size_t argc = max_args;
@@ -180,7 +193,7 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
   uint64_t async_id;
   NODE_API_CALL(env, napi_get_value_int64(env, argv[0], (int64_t *)&async_id));
 
-  size_t n_labels = (argc - 1) / 2;
+  size_t n_labels = (argc - 2) / 2;
   custom_labels_label_t *labels = malloc(n_labels * sizeof *labels);
   size_t i;
   for (i = 0; i < n_labels; ++i) {
@@ -210,35 +223,29 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
     }
   }
 
-  // TODO: should the HM have a get_or_insert function ?
-  labelset_rc *rc = hm_get(hm, async_id);
-  custom_labels_labelset_t *ls = NULL;
-  if (!rc) {
-    rc = malloc(sizeof *rc);
-    // TODO handle alloc error
-    rc->refs = 1;
-    rc->ls = ls = custom_labels_new(n_labels);
-    // TODO handle alloc error
-    hm_insert(hm, async_id, rc);
-  } else if (rc->refs > 1) {
-    --rc->refs;
-    custom_labels_labelset_t *old = rc->ls;
-    rc = malloc(sizeof *rc);
-    // TODO handle alloc error
-    rc->refs = 1;
-    rc->ls = ls = custom_labels_clone(old);
-    // TODO handle alloc error
-    hm_insert(hm, async_id, rc);
-  } else {
-    ls = rc->ls;
+  custom_labels_labelset_t *ls = reify(async_id, n_labels);
+
+  for (size_t i = 0; i < n_labels; ++i) {
+    int error = custom_labels_careful_set(ls, labels[i].key, labels[i].value, &labels[i].value);
+    // TODO fix
+    assert(!error);
   }
 
-  cb_data d = (cb_data){env, argv[1]};
+  napi_value global;
+  NODE_API_CALL(env, napi_get_global(env, &global));
+  NODE_API_CALL(env, napi_call_function(env, global, argv[1], 0, NULL, &retval));
 
-  int error =
-      custom_labels_careful_run_with(ls, labels, n_labels, cb, &d, &retval);
-  // TODO fix this
-  assert(!error);
+  ls = reify(async_id, 0);
+
+  for (size_t i = 0; i < n_labels; ++i) {
+    int error = 0;
+    if (labels[i].value.buf)
+      error = custom_labels_careful_set(ls, labels[i].key, labels[i].value, NULL);
+    else
+      custom_labels_careful_delete(ls, labels[i].key);
+    assert(!error);
+  }
+
 
 cleanup:
   for (size_t j = 0; j < i; ++j) {
@@ -275,5 +282,12 @@ napi_value create_addon(napi_env env) {
   NODE_API_CALL(env, napi_set_named_property(env, result, "destroy",
                                              destroy_function));  
 
+  napi_value print_cur_function;
+  NODE_API_CALL(env, napi_create_function(env, "printCur",
+                                          NAPI_AUTO_LENGTH, PrintCur,
+                                          NULL, &print_cur_function));
+  NODE_API_CALL(env, napi_set_named_property(env, result, "printCur",
+                                             print_cur_function));  
+  
   return result;
 }

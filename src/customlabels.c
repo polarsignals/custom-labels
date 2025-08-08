@@ -372,44 +372,43 @@ custom_labels_labelset_t *custom_labels_current() {
         return custom_labels_current_set;
 }
 
+#define CUSTOM_LABELS_RUN_WITH_IMPL(set_func) \
+        int error; \
+        custom_labels_string_t *values = malloc(n * sizeof(custom_labels_string_t)); \
+        if (!values) \
+                return errno; \
+        for (int i = 0; i < n; ++i) { \
+                error = set_func(ls, labels[i].key, labels[i].value, &values[i]); \
+                if (error) { \
+                        for (int j = 0; j < i; ++j) { \
+                                free((void *)values[j].buf); \
+                        } \
+                        free(values); \
+                        return error; \
+                } \
+        } \
+        void *cb_ret = cb(data); \
+        if (out) { \
+                *out = cb_ret; \
+        } \
+        error = 0; \
+        for (int i = 0; i < n; ++i) { \
+                error = set_func(ls, labels[i].key, values[i], NULL); \
+                if (error) \
+                        break; \
+        } \
+        for (int i = 0; i < n; ++i) { \
+                free((void *)values[i].buf); \
+        } \
+        free(values); \
+        return error;
+
 // TODO - does it matter that these are not applied atomically? The
 // profiler can see a torn state... (some applied, some not).
 int custom_labels_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *labels, int n, void *(*cb)(void *), void *data, void **out) {
-        // NB: It's ok to call this on the current set, since
-        // the `custom_labels_set` functions will forward to the careful ones.
-        // But rewrite this to forward to custom_labels_careful_run_with
-        // if we ever change it and need to do any other mutating operations.
-        int error;
-        // TODO -- maybe avoid an allocation here with a smallvec approach?
-        custom_labels_string_t *values = malloc(n * sizeof(custom_labels_string_t));
-        if (!values)
-                return errno;
-        for (int i = 0; i < n; ++i) {
-                error = custom_labels_set(ls, labels[i].key, labels[i].value, &values[i]);
-                if (error) {
-                        for (int j = 0; j < i; ++j) {
-                                free((void *)values[i].buf);
-                        }
-                        return error;
-                }
-        }
-        void *cb_ret = cb(data);
-        if (out) {
-                *out = cb_ret;
-        }
-        error = 0;
-        for (int i = 0; i < n; ++i) {
-                error = custom_labels_set(ls, labels[i].key, values[i], NULL);
-                if (error)
-                        break;
-        }
-        for (int i = 0; i < n; ++i) {
-                free((void *)values[i].buf);
-        }
-        return error;
+        CUSTOM_LABELS_RUN_WITH_IMPL(custom_labels_set)
 }
 
 int custom_labels_careful_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *labels, int n, void *(*cb)(void *), void *data, void **out) {
-        // custom_labels_run_with inherits the carefulness of custom_labels_set.
-        return custom_labels_run_with(ls, labels, n, cb, data, out);
+        CUSTOM_LABELS_RUN_WITH_IMPL(custom_labels_careful_set)
 }

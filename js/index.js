@@ -7,6 +7,8 @@ if (process.platform == 'linux') {
 
     const addon = bindings('customlabels');
 
+    exports.printCur = addon.printCur;
+
     const { createHook, executionAsyncId, triggerAsyncId, AsyncResource } = require( 'node:async_hooks');
 
     const lsByAsyncId = new Map();
