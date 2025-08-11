@@ -195,7 +195,7 @@ static error_t reify(uint64_t async_id, uint64_t capacity,
       return ALLOC_FAILED;
     }
     // TODO handle alloc error
-    hm_insert(hm, async_id, rc);
+    hm_insert(hm, async_id, new_rc);
     --rc->refs;
   } else {
     *out = rc->ls;
