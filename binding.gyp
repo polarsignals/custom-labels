@@ -16,7 +16,7 @@
                     "cflags": [
                         "-ftls-model=local-dynamic",
                         "-fPIC",
-                        "-O3",
+                        "-O0",
                         "-g"
                     ]
                 }],
