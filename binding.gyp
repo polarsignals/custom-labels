@@ -5,7 +5,7 @@
             "conditions": [
                 ['target_arch == "x64"', {
                     "cflags": [
-                        "-ftls-model=global-dynamic",
+                        "-ftls-model=local-dynamic",
                         "-mtls-dialect=gnu2",
                         "-fPIC",
                         "-O3",
@@ -15,7 +15,6 @@
                 ['target_arch == "arm64"', {
                     "cflags": [
                         "-ftls-model=local-dynamic",
-                        "-mtls-dialect=desc",
                         "-fPIC",
                         "-O3",
                         "-g"
