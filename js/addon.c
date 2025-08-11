@@ -7,8 +7,19 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+static void maybe_throw(napi_env env, const char *err_message) {
+  bool is_pending;
+  napi_is_exception_pending(env, &is_pending);
+  /* If an exception is already pending, don't rethrow it */
+  if (!is_pending) {
+    const char *message =
+        (err_message == NULL) ? "empty error message" : err_message;
+    napi_throw_error(env, NULL, message);
+  }
+}
 
 // returns true if success; otherwise, throws
 // an exception if one is not already pending and
@@ -18,14 +29,7 @@ static bool check_status(napi_env env, napi_status status) {
     const napi_extended_error_info *error_info = NULL;
     napi_get_last_error_info(env, &error_info);
     const char *err_message = error_info->error_message;
-    bool is_pending;
-    napi_is_exception_pending(env, &is_pending);
-    /* If an exception is already pending, don't rethrow it */
-    if (!is_pending) {
-      const char *message =
-          (err_message == NULL) ? "empty error message" : err_message;
-      napi_throw_error((env), NULL, message);
-    }
+    maybe_throw(env, err_message);
   }
   return status == napi_ok;
 }
@@ -40,14 +44,6 @@ static bool check_status(napi_env env, napi_status status) {
 
 // should this be per-isolate?
 __thread custom_labels_hashmap_t *custom_labels_async_hashmap;
-
-custom_labels_hashmap_t *btv_getit() {
-  return custom_labels_async_hashmap;
-}
-static napi_value PrintCur(napi_env env, napi_callback_info info) {
-  fprintf(stderr, "%p\n", btv_getit());
-  return NULL;
-}
 
 #define hm custom_labels_async_hashmap
 
@@ -64,11 +60,30 @@ typedef struct {
 
 static void init() { hm = hm_alloc(); }
 
-typedef enum { SUCCESS, ALLOC_FAILED, CHILD_ALREADY_EXISTED } error_t;
+typedef enum {
+  SUCCESS,
+  ALLOC_FAILED,
+  CHILD_ALREADY_EXISTED,
+} error_t;
+
+const char *my_strerror(error_t err) {
+  switch (err) {
+  case SUCCESS:
+    return "(no error)";
+  case ALLOC_FAILED:
+    return "allocation failed";
+  case CHILD_ALREADY_EXISTED:
+    return "child already existed";
+  }
+  return "(unknown error)";
+}
 
 static void unref(labelset_rc *rc) {
-  if (rc && !--rc->refs)
+  if (rc && !--rc->refs) {
+    // XXX - why do we need two allocations here?
+    custom_labels_free(rc->ls);
     free(rc);
+  }
 }
 
 static error_t ensure_init() {
@@ -109,7 +124,7 @@ static napi_value Destroy(napi_env env, napi_callback_info info) {
   napi_value argv;
   NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, &argv, NULL, NULL));
   if (argc != 1) {
-    napi_throw_error(env, NULL, "destroy(async_id)");
+    maybe_throw(env, "wrong number of args: destroy(async_id)");
     return NULL;
   }
 
@@ -117,8 +132,9 @@ static napi_value Destroy(napi_env env, napi_callback_info info) {
   NODE_API_CALL(env, napi_get_value_int64(env, argv, (int64_t *)&async_id));
 
   error_t err = destroy(async_id);
-  // TODO - error handling
-  assert(!err);
+  if (err) {
+    maybe_throw(env, my_strerror(err));
+  }
   return NULL;
 }
 
@@ -127,7 +143,7 @@ static napi_value Propagate(napi_env env, napi_callback_info info) {
   napi_value argv[2];
   NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   if (argc != 2) {
-    napi_throw_error(env, NULL, "propagate(parent_id, child_id)");
+    maybe_throw(env, "wrong number of args: propagate(parent_id, child_id)");
     return NULL;
   }
 
@@ -136,11 +152,11 @@ static napi_value Propagate(napi_env env, napi_callback_info info) {
   NODE_API_CALL(env, napi_get_value_int64(env, argv[1], (int64_t *)&child_id));
 
   error_t err = propagate(parent_id, child_id);
-  // TODO - error handling
-  assert(!err);
+  if (err) {
+    maybe_throw(env, my_strerror(err));
+  }
   return NULL;
 }
-
 
 #define MAX_LABELS 10
 #define MAX_KEY_SIZE 16
@@ -149,30 +165,42 @@ static napi_value Propagate(napi_env env, napi_callback_info info) {
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
-static custom_labels_labelset_t *reify(uint64_t async_id, uint64_t capacity) {
-  custom_labels_labelset_t *ls;
+static error_t reify(uint64_t async_id, uint64_t capacity,
+                     custom_labels_labelset_t **out) {
+  assert(out); // Justification: this can't be called from JS
   // TODO: should the HM have a get_or_insert function ?
   labelset_rc *rc = hm_get(hm, async_id);
+  *out = NULL;
   if (!rc) {
     rc = malloc(sizeof *rc);
-    // TODO handle alloc error
+    if (!rc)
+      return ALLOC_FAILED;
     rc->refs = 1;
-    rc->ls = ls = custom_labels_new(capacity);
-    // TODO handle alloc error
+    rc->ls = *out = custom_labels_new(capacity);
+    if (!*out) {
+      free(rc);
+      return ALLOC_FAILED;
+    }
+    // TODO handle error
     hm_insert(hm, async_id, rc);
   } else if (rc->refs > 1) {
-    --rc->refs;
-    custom_labels_labelset_t *old = rc->ls;
-    rc = malloc(sizeof *rc);
-    // TODO handle alloc error
-    rc->refs = 1;
-    rc->ls = ls = custom_labels_clone(old);
+    labelset_rc *new_rc = malloc(sizeof *rc);
+    if (!new_rc) {
+      return ALLOC_FAILED;
+    }
+    new_rc->refs = 1;
+    new_rc->ls = *out = custom_labels_clone(rc->ls);
+    if (!*out) {
+      free(new_rc);
+      return ALLOC_FAILED;
+    }
     // TODO handle alloc error
     hm_insert(hm, async_id, rc);
+    --rc->refs;
   } else {
-    ls = rc->ls;
+    *out = rc->ls;
   }
-  return ls;
+  return SUCCESS;
 }
 
 static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
@@ -223,29 +251,34 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
     }
   }
 
-  custom_labels_labelset_t *ls = reify(async_id, n_labels);
+  custom_labels_labelset_t *ls;
+  error_t err = reify(async_id, n_labels, &ls);
+  assert(!err); // TODO
 
   for (size_t i = 0; i < n_labels; ++i) {
-    int error = custom_labels_careful_set(ls, labels[i].key, labels[i].value, &labels[i].value);
+    int error = custom_labels_careful_set(ls, labels[i].key, labels[i].value,
+                                          &labels[i].value);
     // TODO fix
     assert(!error);
   }
 
   napi_value global;
   NODE_API_CALL(env, napi_get_global(env, &global));
-  NODE_API_CALL(env, napi_call_function(env, global, argv[1], 0, NULL, &retval));
+  NODE_API_CALL(env,
+                napi_call_function(env, global, argv[1], 0, NULL, &retval));
 
-  ls = reify(async_id, 0);
-
+  err = reify(async_id, 0, &ls);
+  assert(!err); // TODO
+  
   for (size_t i = 0; i < n_labels; ++i) {
     int error = 0;
     if (labels[i].value.buf)
-      error = custom_labels_careful_set(ls, labels[i].key, labels[i].value, NULL);
+      error =
+          custom_labels_careful_set(ls, labels[i].key, labels[i].value, NULL);
     else
       custom_labels_careful_delete(ls, labels[i].key);
-    assert(!error);
+    assert(!error); // TODO
   }
-
 
 cleanup:
   for (size_t j = 0; j < i; ++j) {
@@ -269,25 +302,17 @@ napi_value create_addon(napi_env env) {
                                              with_labels_function));
 
   napi_value propagate_function;
-  NODE_API_CALL(env, napi_create_function(env, "propagate",
-                                          NAPI_AUTO_LENGTH, Propagate,
-                                          NULL, &propagate_function));
+  NODE_API_CALL(env,
+                napi_create_function(env, "propagate", NAPI_AUTO_LENGTH,
+                                     Propagate, NULL, &propagate_function));
   NODE_API_CALL(env, napi_set_named_property(env, result, "propagate",
                                              propagate_function));
 
   napi_value destroy_function;
-  NODE_API_CALL(env, napi_create_function(env, "destroy",
-                                          NAPI_AUTO_LENGTH, Destroy,
-                                          NULL, &destroy_function));
-  NODE_API_CALL(env, napi_set_named_property(env, result, "destroy",
-                                             destroy_function));  
+  NODE_API_CALL(env, napi_create_function(env, "destroy", NAPI_AUTO_LENGTH,
+                                          Destroy, NULL, &destroy_function));
+  NODE_API_CALL(
+      env, napi_set_named_property(env, result, "destroy", destroy_function));
 
-  napi_value print_cur_function;
-  NODE_API_CALL(env, napi_create_function(env, "printCur",
-                                          NAPI_AUTO_LENGTH, PrintCur,
-                                          NULL, &print_cur_function));
-  NODE_API_CALL(env, napi_set_named_property(env, result, "printCur",
-                                             print_cur_function));  
-  
   return result;
 }

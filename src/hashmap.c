@@ -61,6 +61,7 @@ static _bucket *_bucket_for_key(custom_labels_hashmap_t *self, uint64_t key) {
   return NULL;
 }
 
+// TODO -- this needs error handling
 static void _rehash(custom_labels_hashmap_t *self) {
   custom_labels_hashmap_t new;
   new.size = self->size;
@@ -83,6 +84,7 @@ static void _rehash(custom_labels_hashmap_t *self) {
 // Inserts a key-value pair into the hashmap.
 // Precondition: value must not be null (use delete function to remove entries).
 // Returns the previous value for the key, or NULL if the key was not present.
+// TODO - handle alloc failure 
 void *
 custom_labels_hm_insert(custom_labels_hashmap_t *self, uint64_t key,
                         void *value) {
