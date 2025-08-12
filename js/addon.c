@@ -101,7 +101,11 @@ static error_t propagate(uint64_t parent, uint64_t child) {
   labelset_rc *parent_rc = hm_get(hm, parent);
   if (parent_rc) {
     ++parent_rc->refs;
-    labelset_rc *old = hm_insert(hm, child, parent_rc);
+    labelset_rc *old;
+    bool success = hm_insert(hm, child, parent_rc, (void **)&old);
+    if (!success) {
+      return ALLOC_FAILED;
+    }
     if (old) {
       unref(old);
       return CHILD_ALREADY_EXISTED;
@@ -178,11 +182,13 @@ static error_t reify(uint64_t async_id, uint64_t capacity,
     rc->refs = 1;
     rc->ls = *out = custom_labels_new(capacity);
     if (!*out) {
-      free(rc);
+      unref(rc);
       return ALLOC_FAILED;
     }
-    // TODO handle error
-    hm_insert(hm, async_id, rc);
+    if (!hm_insert(hm, async_id, rc, NULL)) {
+      unref(rc);
+      return ALLOC_FAILED;
+    }
   } else if (rc->refs > 1) {
     labelset_rc *new_rc = malloc(sizeof *rc);
     if (!new_rc) {
@@ -191,11 +197,13 @@ static error_t reify(uint64_t async_id, uint64_t capacity,
     new_rc->refs = 1;
     new_rc->ls = *out = custom_labels_clone(rc->ls);
     if (!*out) {
-      free(new_rc);
+      unref(new_rc);
       return ALLOC_FAILED;
     }
-    // TODO handle alloc error
-    hm_insert(hm, async_id, new_rc);
+    if (!hm_insert(hm, async_id, new_rc, NULL)) {
+      unref(new_rc);
+      return ALLOC_FAILED;
+    }
     --rc->refs;
   } else {
     *out = rc->ls;
@@ -211,11 +219,11 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
   napi_value argv[max_args];
   NODE_API_CALL(env, napi_get_cb_info(env, info, &argc, argv, NULL, NULL));
   if (argc < 2 || argc % 2) {
-    napi_throw_error(env, NULL, "withLabels(f, k, v, ...)");
+    maybe_throw(env, "withLabels(f, k, v, ...)");
     return NULL;
   }
   if (argc > max_args) {
-    napi_throw_error(env, NULL, "max " STR(MAX_LABELS) " labels per call");
+    maybe_throw(env, "max " STR(MAX_LABELS) " labels per call");
     return NULL;
   }
   uint64_t async_id;
@@ -230,7 +238,7 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
     if (!labels[i].key.buf || !labels[i].value.buf) {
       free((void *)labels[i].key.buf);
       free((void *)labels[i].value.buf);
-      napi_throw_error(env, NULL, "alloc failed");
+      maybe_throw(env, "alloc failed");
       goto cleanup;
     }
     napi_status status = napi_get_value_string_utf8(
@@ -253,23 +261,39 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
 
   custom_labels_labelset_t *ls;
   error_t err = reify(async_id, n_labels, &ls);
-  assert(!err); // TODO
+  if (err) {
+    maybe_throw(env, "alloc failed");
+    goto cleanup;
+  }
 
   for (size_t i = 0; i < n_labels; ++i) {
     int error = custom_labels_careful_set(ls, labels[i].key, labels[i].value,
                                           &labels[i].value);
-    // TODO fix
-    assert(!error);
+    if (error) {
+      maybe_throw(env, "alloc failed");
+      goto cleanup;
+    }
   }
 
   napi_value global;
-  NODE_API_CALL(env, napi_get_global(env, &global));
-  NODE_API_CALL(env,
-                napi_call_function(env, global, argv[1], 0, NULL, &retval));
+  napi_status status = napi_get_global(env, &global);
+  if (!check_status(env, status)) {
+    goto cleanup;
+  }
+  // XXX - Check what happens if the underlying function throws an exception.
+  // We probably want to put back all the original labels, and then bubble it up.
+  status = napi_call_function(env, global, argv[1], 0, NULL, &retval);
+  if (!check_status(env, status)) {
+    goto cleanup;
+  }
 
   err = reify(async_id, 0, &ls);
-  assert(!err); // TODO
-  
+  if (err) {
+    maybe_throw(env, "alloc failed");
+    goto cleanup;
+  }
+
+  int error = 0;
   for (size_t i = 0; i < n_labels; ++i) {
     int error = 0;
     if (labels[i].value.buf)
@@ -277,7 +301,11 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
           custom_labels_careful_set(ls, labels[i].key, labels[i].value, NULL);
     else
       custom_labels_careful_delete(ls, labels[i].key);
-    assert(!error); // TODO
+    if (error)
+      break;
+  }
+  if (error) {
+    maybe_throw(env, "alloc_error");
   }
 
 cleanup:

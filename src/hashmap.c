@@ -62,11 +62,13 @@ static _bucket *_bucket_for_key(custom_labels_hashmap_t *self, uint64_t key) {
 }
 
 // TODO -- this needs error handling
-static void _rehash(custom_labels_hashmap_t *self) {
+static bool _rehash(custom_labels_hashmap_t *self) {
   custom_labels_hashmap_t new;
   new.size = self->size;
   new.log2_capacity = self->log2_capacity + 1;
   new.buckets = calloc(_capacity(&new), sizeof(_bucket));
+  if (!new.buckets)
+    return false;
 
   for (int i = 0; i < _capacity(self); ++i) {
     _bucket *b = &self->buckets[i];
@@ -79,27 +81,36 @@ static void _rehash(custom_labels_hashmap_t *self) {
 
   BARRIER;
   *self = new;
+  return true;
 }
 
 // Inserts a key-value pair into the hashmap.
 // Precondition: value must not be null (use delete function to remove entries).
-// Returns the previous value for the key, or NULL if the key was not present.
-// TODO - handle alloc failure 
-void *
+// Places the previous value for the key, or NULL if the key was not present,
+// in `out`.
+//
+// Returns true on success, false on allocation error.
+bool
 custom_labels_hm_insert(custom_labels_hashmap_t *self, uint64_t key,
-                        void *value) {
+                        void *value, void **out) {
   assert(value);
   // rehash unconditionally, even if we don't actually end up inserting.
   // So we might rehash one element below where we "should", but who cares.
-  if (_lf_reached(self))
-    _rehash(self);
+  if (_lf_reached(self)) {    
+    if (!_rehash(self)) {
+      return false;
+    }
+  }
   _bucket *b = _bucket_for_key(self, key);
   assert(b && b->key == key);
   void *old = b->value;
   if (!old)
     ++self->size;
   b->value = value;
-  return old;
+  if (out) {
+    *out = old;
+  }
+  return true;
 }
 
 void *custom_labels_hm_get(custom_labels_hashmap_t *self, uint64_t key) {
