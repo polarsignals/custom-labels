@@ -42,7 +42,6 @@ static bool check_status(napi_env env, napi_status status) {
     }                                                                          \
   } while (0)
 
-// should this be per-isolate?
 __thread custom_labels_hashmap_t *custom_labels_async_hashmap;
 
 #define hm custom_labels_async_hashmap
@@ -80,7 +79,8 @@ const char *my_strerror(error_t err) {
 
 static void unref(labelset_rc *rc) {
   if (rc && !--rc->refs) {
-    // XXX - why do we need two allocations here?
+    // TODO why do we need two allocations here? Like why can't the labelset
+    // just be inline in the RC?
     custom_labels_free(rc->ls);
     free(rc);
   }
@@ -283,12 +283,9 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
   if (!check_status(env, status)) {
     goto cleanup;
   }
-  // XXX - Check what happens if the underlying function throws an exception.
-  // We probably want to put back all the original labels, and then bubble it up.
   status = napi_call_function(env, global, argv[1], 0, NULL, &retval);
-  if (!check_status(env, status)) {
-    goto cleanup;
-  }
+  // put back the old labels and bubble up the exception.
+  check_status(env, status);
 
   err = reify(async_id, 0, &ls);
   if (err) {

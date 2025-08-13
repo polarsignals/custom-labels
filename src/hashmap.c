@@ -89,7 +89,7 @@ static bool _rehash(custom_labels_hashmap_t *self) {
   BARRIER;
   // Non-interruptible store to avoid inconsistent state
 #if defined(__aarch64__)
-  __asm__ volatile("stp %1, %2, [%0]" 
+  __asm__ volatile("stp %1, %2, %0" 
     : "=m"(self->abi_data)
     : "r"(new.abi_data.buckets), "r"(new.abi_data.log2_capacity));
 #elif defined(__x86_64__)
