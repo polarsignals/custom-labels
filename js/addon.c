@@ -267,8 +267,11 @@ static napi_value WithLabelsInternal(napi_env env, napi_callback_info info) {
   }
 
   for (size_t i = 0; i < n_labels; ++i) {
+    custom_labels_string_t old_val;
     int error = custom_labels_careful_set(ls, labels[i].key, labels[i].value,
-                                          &labels[i].value);
+                                          &old_val);
+    free((void*)labels[i].value.buf);
+    labels[i].value = old_val;
     if (error) {
       maybe_throw(env, "alloc failed");
       goto cleanup;

@@ -61,7 +61,6 @@ static _bucket *_bucket_for_key(custom_labels_hashmap_t *self, uint64_t key) {
   return NULL;
 }
 
-// TODO -- this needs error handling
 static bool _rehash(custom_labels_hashmap_t *self) {
   custom_labels_hashmap_t new;
   new.size = self->size;
@@ -78,9 +77,11 @@ static bool _rehash(custom_labels_hashmap_t *self) {
       new_b->value = b->value;
     }
   }
-
+  _bucket *to_free = self->buckets;
   BARRIER;
   *self = new;
+  BARRIER;
+  free(to_free);
   return true;
 }
 
