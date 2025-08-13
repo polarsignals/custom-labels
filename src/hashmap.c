@@ -78,6 +78,9 @@ static bool _rehash(custom_labels_hashmap_t *self) {
     }
   }
   _bucket *to_free = self->buckets;
+  // FIXME - this is interruptible.
+  // Use inline asm to do stp on aarch64
+  // and movdqa on x86.
   BARRIER;
   self->buckets = new.buckets;
   self->log2_capacity = new.log2_capacity;
