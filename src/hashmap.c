@@ -79,7 +79,8 @@ static bool _rehash(custom_labels_hashmap_t *self) {
   }
   _bucket *to_free = self->buckets;
   BARRIER;
-  *self = new;
+  self->buckets = new.buckets;
+  self->log2_capacity = new.log2_capacity;
   BARRIER;
   free(to_free);
   return true;
