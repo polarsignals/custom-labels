@@ -5,7 +5,7 @@
             "conditions": [
                 ['target_arch == "x64"', {
                     "cflags": [
-                        "-ftls-model=global-dynamic",
+                        "-ftls-model=local-dynamic",
                         "-mtls-dialect=gnu2",
                         "-fPIC",
                         "-O3",
@@ -14,8 +14,7 @@
                 }],
                 ['target_arch == "arm64"', {
                     "cflags": [
-                        "-ftls-model=global-dynamic",
-                        "-mtls-dialect=desc",
+                        "-ftls-model=local-dynamic",
                         "-fPIC",
                         "-O3",
                         "-g"
@@ -25,7 +24,8 @@
             "sources": [
                 "js/addon.c",
                 "js/addon_node.c",
-                "src/customlabels.c"
+                "src/customlabels.c",
+                "src/hashmap.c"
             ],
         }
     ]

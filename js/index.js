@@ -7,6 +7,8 @@ if (process.platform == 'linux') {
 
     const addon = bindings('customlabels');
 
+    exports.printCur = addon.printCur;
+
     const { createHook, executionAsyncId, triggerAsyncId, AsyncResource } = require( 'node:async_hooks');
 
     const lsByAsyncId = new Map();
@@ -15,45 +17,10 @@ if (process.platform == 'linux') {
         if (!hook) {
             hook = createHook({
                 init(asyncId, type, triggerAsyncId, resource) {
-                    // addon.log("init: " + asyncId + ", " + triggerAsyncId + "; ");
-                    const parent = lsByAsyncId.get(triggerAsyncId);
-                    if (parent) {
-                        // addon.log("parent:");
-                        // parent.printDebug();
-                        lsByAsyncId.set(asyncId, new addon.LabelSetRef(parent));
-                    } else {
-                        // addon.log("no parent\n");
-                        // lsByAsyncId.set(asyncId, new addon.LabelSetRef());
-                    }
-                },
-                before(asyncId) {
-                    // addon.log("before: " + asyncId + "; ");
-                    const x = lsByAsyncId.get(asyncId);
-                    if (x) {
-                        // x.printDebug();
-                        x.install();
-                    } else {
-                        // addon.log("no set\n");
-                    }
-                },
-                after(asyncId) {
-                    // addon.log("after: " + asyncId + "; ");
-                    const x = lsByAsyncId.get(asyncId);
-                    // if (x)
-                    //     x.printDebug();
-                    // else
-                    //     addon.log("no set\n");
-                    addon.clearLabelSet();
+                    addon.propagate(triggerAsyncId, asyncId);
                 },
                 destroy(asyncId) {
-                    // addon.log("destroy: " + asyncId + "; ");
-                    // const x = lsByAsyncId.get(asyncId);
-                    // if (x) {
-                    //     x.printDebug();
-                    // } else {
-                    //     addon.log("no set\n");
-                    // }
-                    lsByAsyncId.delete(asyncId);
+                    addon.destroy(asyncId);
                 },
             });
 
@@ -61,32 +28,15 @@ if (process.platform == 'linux') {
         }
     }
 
-    withLabel = function(k, v, f) {
+    withLabels = function(f, ...kvs) {
         ensureHook();
-        const xct = executionAsyncId();
-        // addon.log('wl: ' + k + ' ' + v + '; xct: ' + xct + "\n");
-        let ls = lsByAsyncId.get(xct);
-        if (!ls) {
-            ls = new addon.LabelSetRef();
-            lsByAsyncId.set(xct, ls);
-            ls.install();
-        }
-        const old = ls.getValue(k);
-        ls.setValue(k, v);
-        const retval = f();
-        if (old) {
-            ls.setValue(k, old);
-        } else {
-            ls.deleteValue(k);
-        }
-        // addon.log('wl done. xct: ' + xct + "; ");
-        // ls.printDebug();
-        return retval;
+        const id = executionAsyncId();
+        addon.withLabelsInternal(id, f, ...kvs);
     };
 } else {
-    withLabel = function(k, v, f) {
+    withLabels = function(f, ...kvs) {
         return f();
     };
 }
 
-exports.withLabel = withLabel;
+exports.withLabels = withLabels;
