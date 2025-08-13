@@ -24,9 +24,17 @@ typedef struct {
   void *value;
 } _bucket;
 
-struct _hm {
+typedef struct {
   _bucket *buckets;
   uint64_t log2_capacity;
+} _abi_data
+#ifdef __x86_64__
+__attribute__((aligned(16))) // Required for movdqa instruction
+#endif
+;
+
+struct _hm {
+  _abi_data abi_data;
 
   // everything below here isn't part of the ABI
   uint64_t size;
@@ -36,7 +44,7 @@ struct _hm {
 #define LF_NUM 3
 #define LF_DENOM 5
 
-static uint64_t _capacity(custom_labels_hashmap_t *self) { return 1ULL << self->log2_capacity; }
+static uint64_t _capacity(custom_labels_hashmap_t *self) { return 1ULL << self->abi_data.log2_capacity; }
 
 static bool _lf_reached(custom_labels_hashmap_t *self) {
   return self->size * LF_DENOM >= _capacity(self) * LF_NUM;
@@ -48,7 +56,7 @@ static _bucket *_bucket_for_key(custom_labels_hashmap_t *self, uint64_t key) {
 
   for (int i = 0; i < capacity; ++i) {
     int pos = (h + i) % capacity;
-    _bucket *b = &self->buckets[pos];
+    _bucket *b = &self->abi_data.buckets[pos];
     if (!b->value) {
       b->key = key;
       return b;
@@ -64,26 +72,33 @@ static _bucket *_bucket_for_key(custom_labels_hashmap_t *self, uint64_t key) {
 static bool _rehash(custom_labels_hashmap_t *self) {
   custom_labels_hashmap_t new;
   new.size = self->size;
-  new.log2_capacity = self->log2_capacity + 1;
-  new.buckets = calloc(_capacity(&new), sizeof(_bucket));
-  if (!new.buckets)
+  new.abi_data.log2_capacity = self->abi_data.log2_capacity + 1;
+  new.abi_data.buckets = calloc(_capacity(&new), sizeof(_bucket));
+  if (!new.abi_data.buckets)
     return false;
 
   for (int i = 0; i < _capacity(self); ++i) {
-    _bucket *b = &self->buckets[i];
+    _bucket *b = &self->abi_data.buckets[i];
     if (b->value) {
       _bucket *new_b = _bucket_for_key(&new, b->key);
       assert(new_b && new_b->key == b->key);
       new_b->value = b->value;
     }
   }
-  _bucket *to_free = self->buckets;
-  // FIXME - this is interruptible.
-  // Use inline asm to do stp on aarch64
-  // and movdqa on x86.
+  _bucket *to_free = self->abi_data.buckets;
   BARRIER;
-  self->buckets = new.buckets;
-  self->log2_capacity = new.log2_capacity;
+  // Non-interruptible store to avoid inconsistent state
+#if defined(__aarch64__)
+  __asm__ volatile("stp %1, %2, [%0]" 
+    : "=m"(self->abi_data)
+    : "r"(new.abi_data.buckets), "r"(new.abi_data.log2_capacity));
+#elif defined(__x86_64__)
+  __asm__ volatile("movdqa %1, %0" 
+    : "=m"(self->abi_data) 
+    : "x"(new.abi_data));
+#else
+#error "Unsupported architecture"
+#endif
   BARRIER;
   free(to_free);
   return true;
@@ -138,14 +153,14 @@ void *custom_labels_hm_delete(custom_labels_hashmap_t *self, uint64_t key) {
 
   --self->size;
 
-  int pos = b - self->buckets;
+  int pos = b - self->abi_data.buckets;
 
   int blank_pos = pos;
   uint64_t cap = _capacity(self);
   int first_unknown = (blank_pos + 1) % cap;
   // This can't loop infinitely, because our load factor is <1 so we would have already rehashed by then.
   for (;;) {
-    _bucket *next = &self->buckets[first_unknown];
+    _bucket *next = &self->abi_data.buckets[first_unknown];
     if (!next->value) break;
     int ideal_bucket = _hash(next->key) % cap;
     // if the path from ideal_bucket to next crosses the blank, we need
@@ -155,13 +170,13 @@ void *custom_labels_hm_delete(custom_labels_hashmap_t *self, uint64_t key) {
     int first_unknown_rotated = (first_unknown + cap - blank_pos) % cap;
     bool crosses = first_unknown_rotated < ideal_bucket_rotated || ideal_bucket_rotated == 0;
     if (crosses) {
-      self->buckets[blank_pos] = *next;
+      self->abi_data.buckets[blank_pos] = *next;
       blank_pos = first_unknown;
     }
     first_unknown = (first_unknown + 1) % cap;
   }
   BARRIER;
-  self->buckets[blank_pos] = (_bucket){0};
+  self->abi_data.buckets[blank_pos] = (_bucket){0};
 
   return old;
 }
@@ -172,13 +187,13 @@ custom_labels_hashmap_t *custom_labels_hm_alloc() {
   custom_labels_hashmap_t *self = malloc(sizeof *self);
   if (!self)
     return NULL;
-  self->log2_capacity = INITIAL_LOG2_CAPACITY;
-  self->buckets = calloc(_capacity(self), sizeof(_bucket));
+  self->abi_data.log2_capacity = INITIAL_LOG2_CAPACITY;
+  self->abi_data.buckets = calloc(_capacity(self), sizeof(_bucket));
   self->size = 0;
   return self;
 }
 
 void custom_labels_hm_free(custom_labels_hashmap_t *self) {
-  free(self->buckets);
+  free(self->abi_data.buckets);
   free(self);
 }
