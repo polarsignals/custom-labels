@@ -1,0 +1,20 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: install-valgrind
+      run: sudo apt update && sudo apt install -y valgrind
+    - name: make
+      run: make test_hashmap
+    - name: test
+      run: valgrind --leak-check=full --error-exitcode=1 ./test_hashmap
