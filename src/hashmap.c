@@ -93,9 +93,11 @@ static bool _rehash(custom_labels_hashmap_t *self) {
     : "=m"(self->abi_data)
     : "r"(new.abi_data.buckets), "r"(new.abi_data.log2_capacity));
 #elif defined(__x86_64__)
-  __asm__ volatile("movdqa %1, %0" 
-    : "=m"(self->abi_data) 
-    : "x"(new.abi_data));
+  __asm__ volatile("movdqa %1, %%xmm0\n\t"
+                   "movdqa %%xmm0, %0"
+    : "=m"(self->abi_data)
+    : "m"(new.abi_data)
+    : "xmm0");
 #else
 #error "Unsupported architecture"
 #endif
