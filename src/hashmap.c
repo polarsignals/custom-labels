@@ -139,11 +139,6 @@ void *custom_labels_hm_get(custom_labels_hashmap_t *self, uint64_t key) {
   return b->value;
 }
 
-static int _pos(custom_labels_hashmap_t *self, uint64_t key) {
-  uint64_t h = _hash(key);
-  return h % _capacity(self);
-}
-
 void *custom_labels_hm_delete(custom_labels_hashmap_t *self, uint64_t key) {
   _bucket *b = _bucket_for_key(self, key);
   assert(b);
