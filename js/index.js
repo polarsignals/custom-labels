@@ -7,8 +7,6 @@ if (process.platform == 'linux') {
 
     const addon = bindings('customlabels');
 
-    exports.printCur = addon.printCur;
-
     const { createHook, executionAsyncId, triggerAsyncId, AsyncResource } = require( 'node:async_hooks');
 
     const lsByAsyncId = new Map();
@@ -31,7 +29,7 @@ if (process.platform == 'linux') {
     withLabels = function(f, ...kvs) {
         ensureHook();
         const id = executionAsyncId();
-        addon.withLabelsInternal(id, f, ...kvs);
+        return addon.withLabelsInternal(id, f, ...kvs);
     };
 } else {
     withLabels = function(f, ...kvs) {
