@@ -412,3 +412,7 @@ int custom_labels_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *
 int custom_labels_careful_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *labels, int n, void *(*cb)(void *), void *data, void **out) {
         CUSTOM_LABELS_RUN_WITH_IMPL(custom_labels_careful_set)
 }
+
+size_t custom_labels_count(custom_labels_labelset_t *ls) {
+        return ls->count;
+}

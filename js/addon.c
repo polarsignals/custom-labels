@@ -99,7 +99,7 @@ static error_t propagate(uint64_t parent, uint64_t child) {
   if ((error = ensure_init()))
     return error;
   labelset_rc *parent_rc = hm_get(hm, parent);
-  if (parent_rc) {
+  if (parent_rc && custom_labels_count(parent_rc->ls)) {
     ++parent_rc->refs;
     labelset_rc *old;
     bool success = hm_insert(hm, child, parent_rc, (void **)&old);

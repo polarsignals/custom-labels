@@ -127,8 +127,11 @@ custom_labels_labelset_t *custom_labels_clone(const custom_labels_labelset_t *ls
  * write the return value of the callback into out.
  */
 int custom_labels_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *labels, int n, void *(*cb)(void *), void *data, void **out);
- 
 
+/**
+ * Get the number of labels in the label set.
+ */
+size_t custom_labels_count(custom_labels_labelset_t *ls);
 // "careful" functions:
 // These all do the same thing as the non-careful versions.
 //
@@ -141,3 +144,4 @@ void custom_labels_careful_delete(custom_labels_labelset_t *ls, custom_labels_st
 int custom_labels_careful_set(custom_labels_labelset_t *ls, custom_labels_string_t key, custom_labels_string_t value, custom_labels_string_t *old_value_out);
 
 int custom_labels_careful_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *labels, int n, void *(*cb)(void *), void *data, void **out);
+
