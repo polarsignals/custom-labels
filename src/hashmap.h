@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
 // Forward declaration of hashmap type
 struct _hm;
 typedef struct _hm custom_labels_hashmap_t;
@@ -31,4 +35,8 @@ void *custom_labels_hm_get(custom_labels_hashmap_t *self, uint64_t key);
 // Returns the previous value for the key, or NULL if the key was not present
 void *custom_labels_hm_delete(custom_labels_hashmap_t *self, uint64_t key);
 
+#ifdef __cplusplus
+}
+#endif
+  
 #endif // HASHMAP_H

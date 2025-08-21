@@ -54,7 +54,7 @@ static _bucket *_bucket_for_key(custom_labels_hashmap_t *self, uint64_t key) {
   uint64_t h = _hash(key);
   uint64_t capacity = _capacity(self);
 
-  for (int i = 0; i < capacity; ++i) {
+  for (uint64_t i = 0; i < capacity; ++i) {
     int pos = (h + i) % capacity;
     _bucket *b = &self->abi_data.buckets[pos];
     if (!b->value) {
@@ -77,7 +77,7 @@ static bool _rehash(custom_labels_hashmap_t *self) {
   if (!new.abi_data.buckets)
     return false;
 
-  for (int i = 0; i < _capacity(self); ++i) {
+  for (uint64_t i = 0; i < _capacity(self); ++i) {
     _bucket *b = &self->abi_data.buckets[i];
     if (b->value) {
       _bucket *new_b = _bucket_for_key(&new, b->key);

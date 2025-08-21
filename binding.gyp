@@ -9,7 +9,7 @@
                         "-mtls-dialect=gnu2",
                         "-fPIC",
                         "-O3",
-                        "-g"
+                        "-g",
                     ]
                 }],
                 ['target_arch == "arm64"', {
@@ -17,14 +17,13 @@
                         "-ftls-model=local-dynamic",
                         "-fPIC",
                         "-O3",
-                        "-g"
+                        "-g",
                     ]
                 }],
             ],
             "sources": [
-                "js/addon.c",
-                "js/addon_node.c",
-                "src/customlabels.c",
+                "js/addon2.cpp",
+                "src/customlabels.cpp",
                 "src/hashmap.c"
             ],
         }

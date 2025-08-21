@@ -1,3 +1,9 @@
+#ifndef CUSTOMLABELS_H
+#define CUSTOMLABELS_H
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
 typedef unsigned long size_t;
 typedef unsigned uint32_t;
 
@@ -145,3 +151,8 @@ int custom_labels_careful_set(custom_labels_labelset_t *ls, custom_labels_string
 
 int custom_labels_careful_run_with(custom_labels_labelset_t *ls, custom_labels_label_t *labels, int n, void *(*cb)(void *), void *data, void **out);
 
+#ifdef __cplusplus
+}
+#endif
+    
+#endif // CUSTOMLABELS_H

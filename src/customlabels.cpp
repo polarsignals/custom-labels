@@ -40,7 +40,7 @@ int custom_labels_debug_string(const custom_labels_labelset_t *ls, custom_labels
                 }
         }
 
-        unsigned char *s = malloc(out->len);
+        unsigned char *s = (unsigned char *)malloc(out->len);
         if (!s) {
                 return errno;
         }
@@ -93,7 +93,7 @@ const custom_labels_label_t *custom_labels_get(custom_labels_labelset_t *ls, cus
 static int careful_push(custom_labels_labelset_t *ls, custom_labels_string_t key, custom_labels_string_t value) {
         if (ls->count == ls->capacity) {
                 size_t new_cap = MAX(2 * ls->capacity, 1);
-                custom_labels_label_t *new_storage = malloc(sizeof(custom_labels_label_t) * new_cap);
+                custom_labels_label_t *new_storage = (custom_labels_label_t *)malloc(sizeof(custom_labels_label_t) * new_cap);
                 if (!new_storage) {
                         return errno;
                 }
@@ -108,12 +108,12 @@ static int careful_push(custom_labels_labelset_t *ls, custom_labels_string_t key
                 ls->capacity = new_cap;
                 free(old_storage);
         }
-        unsigned char *new_key_buf = malloc(key.len);
+        unsigned char *new_key_buf = (unsigned char *)malloc(key.len);
         if (!new_key_buf) {
                 return errno;
         }
         memcpy(new_key_buf, key.buf, key.len);
-        unsigned char *new_value_buf = malloc(value.len);
+        unsigned char *new_value_buf = (unsigned char *)malloc(value.len);
         if (!new_value_buf) {
                 free(new_key_buf);
                 return errno;
@@ -134,17 +134,17 @@ static int push(custom_labels_labelset_t *ls, custom_labels_string_t key, custom
                 return careful_push(ls, key, value);
         if (ls->count == ls->capacity) {
                 size_t new_cap = MAX(2 * ls->capacity, 1);
-                ls->storage = realloc(ls->storage, new_cap * sizeof(custom_labels_label_t));
+                ls->storage = (custom_labels_label_t *)realloc(ls->storage, new_cap * sizeof(custom_labels_label_t));
                 ls->capacity = new_cap;
                 if (!ls->storage)
                         return errno;
         }
-        unsigned char *new_key_buf = malloc(key.len);
+        unsigned char *new_key_buf = (unsigned char *)malloc(key.len);
         if (!new_key_buf) {
                 return errno;
         }
         memcpy(new_key_buf, key.buf, key.len);
-        unsigned char *new_value_buf = malloc(value.len);
+        unsigned char *new_value_buf = (unsigned char *)malloc(value.len);
         if (!new_value_buf) {
                 free(new_key_buf);
                 return errno;
@@ -211,10 +211,10 @@ static int custom_labels_string_clone(custom_labels_string_t s, custom_labels_st
         if (!new_out)
                 return 0;
         if (!s.buf) {
-                *new_out = (custom_labels_string_t) { 0 };
+                *new_out = {};
                 return 0;
         }
-        unsigned char *new_buf = malloc(s.len);
+        unsigned char *new_buf = (unsigned char *)malloc(s.len);
         if (!new_buf)
                 return errno;
         memcpy(new_buf, s.buf, s.len);
@@ -234,7 +234,7 @@ int custom_labels_careful_set(custom_labels_labelset_t *ls, custom_labels_string
                         if (error)
                                 return error;
                 } else {
-                        *old_value_out = (custom_labels_string_t) { 0 };
+                  *old_value_out = {};
                 }
         }
         int old_idx = old ? old - ls->storage : -1;
@@ -249,10 +249,10 @@ int custom_labels_careful_set(custom_labels_labelset_t *ls, custom_labels_string
 }
 
 custom_labels_labelset_t *custom_labels_new(size_t capacity) {
-        custom_labels_labelset_t *ls = malloc(sizeof(custom_labels_labelset_t));
+        custom_labels_labelset_t *ls = (custom_labels_labelset_t *)malloc(sizeof(custom_labels_labelset_t));
         if (!ls)
                 return NULL;
-        custom_labels_label_t *storage = calloc(capacity, sizeof(custom_labels_label_t));
+        custom_labels_label_t *storage = (custom_labels_label_t *)calloc(capacity, sizeof(custom_labels_label_t));
         if (!storage) {
                 free(ls);
                 return NULL;
@@ -274,12 +274,12 @@ int custom_labels_set(custom_labels_labelset_t *ls, custom_labels_string_t key, 
                         if (error)
                                 return error;
                 } else {
-                        *old_value_out = (custom_labels_string_t) { 0 };
+                        *old_value_out = {  };
                 }
         }
 
         if (old) {
-                unsigned char *new_value_buf = malloc(value.len);
+                unsigned char *new_value_buf = (unsigned char *)malloc(value.len);
                 if (!new_value_buf) {
                         return errno;
                 }
@@ -353,19 +353,19 @@ static int custom_labels_label_clone(custom_labels_label_t lbl, custom_labels_la
 }
 
 custom_labels_labelset_t *custom_labels_clone(const custom_labels_labelset_t *ls) {
-        custom_labels_labelset_t *new = custom_labels_new(ls->count);
-        if (!new)
+        custom_labels_labelset_t *new_ = custom_labels_new(ls->count);
+        if (!new_)
                 return NULL;
         for (size_t i = 0; i < ls->count; ++i) {
-                int ret = custom_labels_label_clone(ls->storage[i], &new->storage[i]);
+                int ret = custom_labels_label_clone(ls->storage[i], &new_->storage[i]);
                 if (ret) {
-                        new->count = i;
-                        custom_labels_free(new);
+                        new_->count = i;
+                        custom_labels_free(new_);
                         return NULL;
                 }
         }
-        new->count = ls->count;
-        return new;
+        new_->count = ls->count;
+        return new_;
 }
 
 custom_labels_labelset_t *custom_labels_current() {
@@ -374,7 +374,7 @@ custom_labels_labelset_t *custom_labels_current() {
 
 #define CUSTOM_LABELS_RUN_WITH_IMPL(set_func) \
         int error; \
-        custom_labels_string_t *values = malloc(n * sizeof(custom_labels_string_t)); \
+        custom_labels_string_t *values = (custom_labels_string_t *)malloc(n * sizeof(custom_labels_string_t)); \
         if (!values) \
                 return errno; \
         for (int i = 0; i < n; ++i) { \
