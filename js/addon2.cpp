@@ -13,6 +13,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+extern "C" {
+  __thread custom_labels_hashmap_t *custom_labels_async_hashmap;
+}
+
 namespace custom_labels {
 using v8::FunctionCallbackInfo;
 using v8::Isolate;
@@ -22,7 +26,6 @@ using v8::Object;
 using v8::String;
 using v8::Value;
 
-__thread custom_labels_hashmap_t *custom_labels_async_hashmap;
 
 #define hm custom_labels_async_hashmap
 

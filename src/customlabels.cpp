@@ -10,8 +10,10 @@
 
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-__attribute__((retain))
-const uint32_t custom_labels_abi_version = 1;
+extern "C" {
+  __attribute__((retain))
+    uint32_t custom_labels_abi_version = 1;
+}
 
 struct _custom_labels_ls {
   custom_labels_label_t *storage;
