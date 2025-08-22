@@ -1,6 +1,6 @@
 {
     "name": "@polarsignals/custom-labels",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "description": "test",
     "main": "js/index.js",
     "scripts": {
@@ -17,6 +17,7 @@
         "js/*.js",
         "src/*.h",
         "src/*.c",
+        "src/*.cpp",
         "binding.gyp",
         "build.js"
     ],
