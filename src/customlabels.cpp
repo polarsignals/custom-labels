@@ -354,7 +354,7 @@ static int custom_labels_label_clone(custom_labels_label_t lbl, custom_labels_la
         return 0;
 }
 
-custom_labels_labelset_t *custom_labels_clone(const custom_labels_labelset_t *ls) {
+custom_labels_labelset_t *custom_labels_clone_with_capacity(const custom_labels_labelset_t *ls, size_t capacity) {
         custom_labels_labelset_t *new_ = custom_labels_new(ls->count);
         if (!new_)
                 return NULL;
@@ -368,6 +368,10 @@ custom_labels_labelset_t *custom_labels_clone(const custom_labels_labelset_t *ls
         }
         new_->count = ls->count;
         return new_;
+}
+
+custom_labels_labelset_t *custom_labels_clone(const custom_labels_labelset_t *ls) {
+        return custom_labels_clone_with_capacity(ls, ls->count);
 }
 
 custom_labels_labelset_t *custom_labels_current() {

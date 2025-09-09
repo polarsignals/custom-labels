@@ -127,6 +127,13 @@ custom_labels_labelset_t *custom_labels_replace(custom_labels_labelset_t *ls);
 custom_labels_labelset_t *custom_labels_clone(const custom_labels_labelset_t *ls);
 
 /**
+ * Clone the given label set, allocating the given capacity for the new one.
+ *
+ * Returns the clone on success, NULL otherwise.
+ */
+custom_labels_labelset_t *custom_labels_clone_with_capacity(const custom_labels_labelset_t *ls, size_t capacity);
+
+/**
  * Run the supplied callback function (passing it the supplied data pointer)
  * with the supplied set of N labels applied,
  * then re-set the old values. Optionally, if out is non-NULL,
