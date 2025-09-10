@@ -166,7 +166,7 @@ void StoreHash(const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
   int hash = args[0].As<Object>()->GetIdentityHash();
   custom_labels_als_identity_hash = hash;
-  printf("hash: %d\n", hash);
+  // printf("hash: %d\n", hash);
 }
   
 #pragma GCC diagnostic push
