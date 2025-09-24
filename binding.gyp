@@ -22,7 +22,7 @@
                 }],
             ],
             "sources": [
-                "js/addon2.cpp",
+                "js/addon.cpp",
                 "src/customlabels.cpp",
                 "src/hashmap.c"
             ],

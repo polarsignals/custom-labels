@@ -12,15 +12,16 @@
 #include <stdlib.h>
 
 extern "C" {
-  using v8::Global;
-  using v8::Object;
-  __thread int custom_labels_als_identity_hash;
+using v8::Global;
+using v8::Object;
+__thread int custom_labels_als_identity_hash;
 
-  thread_local Global<Object> custom_labels_als_handle;
+thread_local Global<Object> custom_labels_als_handle;
 }
 
 namespace custom_labels {
 using node::ObjectWrap;
+using v8::Context;
 using v8::Exception;
 using v8::Function;
 using v8::FunctionCallbackInfo;
@@ -33,8 +34,6 @@ using v8::Object;
 using v8::ObjectTemplate;
 using v8::String;
 using v8::Value;
-using v8::Context;
-
 
 #define hm custom_labels_async_hashmap
 
@@ -52,9 +51,10 @@ class ClWrap : public ObjectWrap {
 public:
   ~ClWrap() override;
   static void Init(Local<Object> exports);
+
 private:
-  static void New(const v8::FunctionCallbackInfo<v8::Value>& args);
-  static void ToString(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void New(const v8::FunctionCallbackInfo<v8::Value> &args);
+  static void ToString(const v8::FunctionCallbackInfo<v8::Value> &args);
   custom_labels_labelset_t *underlying_;
   // Homemade RTTI. If the bytes at this address equal
   // CLWRAP_TOKEN_VALUE, the agent knows it's looking at
@@ -63,15 +63,12 @@ private:
   explicit ClWrap(custom_labels_labelset_t *underlying);
 };
 
-ClWrap::~ClWrap() {
-  custom_labels_free(underlying_);
-}
-  
-ClWrap::ClWrap(custom_labels_labelset_t *underlying) :
-  underlying_(underlying),
-  token_(CLWRAP_TOKEN_VALUE) {}
-  
-void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value>& args) {
+ClWrap::~ClWrap() { custom_labels_free(underlying_); }
+
+ClWrap::ClWrap(custom_labels_labelset_t *underlying)
+    : underlying_(underlying), token_(CLWRAP_TOKEN_VALUE) {}
+
+void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value> &args) {
   Isolate *isolate = args.GetIsolate();
 
   if (!args.IsConstructCall()) [[unlikely]] {
@@ -80,23 +77,26 @@ void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
   if (args.Length() % 2 == 0) {
     isolate->ThrowError("Must be called like `new ClWrap(old, (k, v)*)`");
-    return;    
+    return;
   }
 
   size_t new_labels = args.Length() / 2;
 
-  // args[0] is the old ls, args[n+1] is the nth key, args[n+2] is the nth value.
+  // args[0] is the old ls, args[n+1] is the nth key, args[n+2] is the nth
+  // value.
   custom_labels_labelset_t *old = NULL;
   if (!args[0]->IsUndefined()) {
     if (!args[0]->IsObject()) {
-      isolate->ThrowError("First argument must be the old object or `undefined`");
+      isolate->ThrowError(
+          "First argument must be the old object or `undefined`");
       return;
     }
     ClWrap *old_wrap = ObjectWrap::Unwrap<ClWrap>(args[0].As<Object>());
     if (!old_wrap || old_wrap->token_ != CLWRAP_TOKEN_VALUE) {
       // TODO: Better way to do this?
       // https://stackoverflow.com/questions/8994196/how-to-check-for-correct-type-when-calling-objectwrapunwrap-in-a-nodejs-add-on
-      isolate->ThrowError("First argument must be the old object or `undefined`");
+      isolate->ThrowError(
+          "First argument must be the old object or `undefined`");
       return;
     }
     old = old_wrap->underlying_;
@@ -104,7 +104,8 @@ void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
   custom_labels_labelset_t *underlying;
   if (old) {
-    underlying = custom_labels_clone_with_capacity(old, custom_labels_count(old) + new_labels);
+    underlying = custom_labels_clone_with_capacity(
+        old, custom_labels_count(old) + new_labels);
     if (!underlying) {
       isolate->ThrowError("allocation failed");
       return;
@@ -117,9 +118,8 @@ void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value>& args) {
     }
   }
 
-  ClWrap *new_  = new ClWrap(underlying);
+  ClWrap *new_ = new ClWrap(underlying);
   auto me = std::unique_ptr<ClWrap>(new_);
-  
 
   for (size_t i = 0; i < new_labels; ++i) {
     int k_idx = 2 * i + 1;
@@ -138,60 +138,61 @@ void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value>& args) {
     int v_len = v->Utf8Length(isolate);
     auto v_buf = std::make_unique<char[]>(v_len);
 
-    k->WriteUtf8(isolate, k_buf.get(), k_len, nullptr, String::NO_NULL_TERMINATION);
-    v->WriteUtf8(isolate, v_buf.get(), v_len, nullptr, String::NO_NULL_TERMINATION);
+    k->WriteUtf8(isolate, k_buf.get(), k_len, nullptr,
+                 String::NO_NULL_TERMINATION);
+    v->WriteUtf8(isolate, v_buf.get(), v_len, nullptr,
+                 String::NO_NULL_TERMINATION);
 
-    custom_labels_string_t key { (size_t)k_len, (unsigned char *)k_buf.get() };
-    custom_labels_string_t value { (size_t)v_len, (unsigned char *)v_buf.get() };
+    custom_labels_string_t key{(size_t)k_len, (unsigned char *)k_buf.get()};
+    custom_labels_string_t value{(size_t)v_len, (unsigned char *)v_buf.get()};
     int err = custom_labels_set(underlying, key, value, nullptr);
 
     if (err) {
       // TODO - better error message here.
-      isolate->ThrowError("Underlying custom_labels_set call failed: probably an allocation error.");
+      isolate->ThrowError("Underlying custom_labels_set call failed: probably "
+                          "an allocation error.");
       return;
     }
   }
 
   me.release()->Wrap(args.This());
-  
+
   args.GetReturnValue().Set(args.This());
 }
 
-void ClWrap::ToString(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  Isolate* isolate = args.GetIsolate();
-  
-  ClWrap* obj = ObjectWrap::Unwrap<ClWrap>(args.This());
+void ClWrap::ToString(const v8::FunctionCallbackInfo<v8::Value> &args) {
+  Isolate *isolate = args.GetIsolate();
+
+  ClWrap *obj = ObjectWrap::Unwrap<ClWrap>(args.This());
   if (!obj) {
     isolate->ThrowError("Invalid ClWrap object");
     return;
   }
-  
+
   custom_labels_string_t debug_str;
   int result = custom_labels_debug_string(obj->underlying_, &debug_str);
-  
+
   if (result != 0) {
     isolate->ThrowError("Failed to generate debug string");
     return;
   }
-  
-  Local<String> js_string = String::NewFromUtf8(
-    isolate, 
-    (const char*)debug_str.buf, 
-    NewStringType::kNormal, 
-    debug_str.len
-  ).ToLocalChecked();
-  
-  free((void*)debug_str.buf);
-  
+
+  Local<String> js_string =
+      String::NewFromUtf8(isolate, (const char *)debug_str.buf,
+                          NewStringType::kNormal, debug_str.len)
+          .ToLocalChecked();
+
+  free((void *)debug_str.buf);
+
   args.GetReturnValue().Set(js_string);
 }
 
 void ClWrap::Init(Local<Object> exports) {
-  Isolate* isolate = exports->GetIsolate();
+  Isolate *isolate = exports->GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
 
   Local<ObjectTemplate> addon_data_tpl = ObjectTemplate::New(isolate);
-  addon_data_tpl->SetInternalFieldCount(1);  // 1 field for the ClWrap::New()
+  addon_data_tpl->SetInternalFieldCount(1); // 1 field for the ClWrap::New()
   Local<Object> addon_data =
       addon_data_tpl->NewInstance(context).ToLocalChecked();
 
@@ -199,21 +200,21 @@ void ClWrap::Init(Local<Object> exports) {
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New, addon_data);
   tpl->SetClassName(String::NewFromUtf8(isolate, "ClWrap").ToLocalChecked());
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
-  
+
   // Add toString method
   tpl->PrototypeTemplate()->Set(
-    String::NewFromUtf8(isolate, "toString").ToLocalChecked(),
-    FunctionTemplate::New(isolate, ToString)
-  );
+      String::NewFromUtf8(isolate, "toString").ToLocalChecked(),
+      FunctionTemplate::New(isolate, ToString));
 
   Local<Function> constructor = tpl->GetFunction(context).ToLocalChecked();
   addon_data->SetInternalField(0, constructor);
-  exports->Set(context, String::NewFromUtf8(
-      isolate, "ClWrap").ToLocalChecked(),
-      constructor).FromJust();
+  exports
+      ->Set(context, String::NewFromUtf8(isolate, "ClWrap").ToLocalChecked(),
+            constructor)
+      .FromJust();
 }
 
-void StoreHash(const v8::FunctionCallbackInfo<v8::Value>& args) {
+void StoreHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
   Isolate *isolate = args.GetIsolate();
   if (!args[0]->IsObject()) {
     isolate->ThrowError("First argument must be an object.");
@@ -223,7 +224,7 @@ void StoreHash(const v8::FunctionCallbackInfo<v8::Value>& args) {
   custom_labels_als_identity_hash = hash;
   custom_labels_als_handle = Global<Object>(isolate, obj);
 }
-  
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
