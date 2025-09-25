@@ -225,6 +225,18 @@ void StoreHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
   custom_labels_als_handle = Global<Object>(isolate, obj);
 }
 
+// parca-agent can't see the hash symbol on x86 if we don't have
+// this function that reads it.
+// Is the linker stripping it out due to lack of ever being read?
+// Not sure; FWIW `nm` *can* see it.
+//
+// TODO: Figure out why, so we can get rid of this.
+void GetStoredHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
+  Isolate *isolate = args.GetIsolate();
+  Local<v8::Integer> ret {v8::Integer::New(isolate, custom_labels_als_identity_hash)};
+  args.GetReturnValue().Set(ret);
+}
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
