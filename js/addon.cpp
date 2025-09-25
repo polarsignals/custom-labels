@@ -14,7 +14,7 @@
 extern "C" {
 using v8::Global;
 using v8::Object;
-__thread int custom_labels_als_identity_hash;
+thread_local int custom_labels_als_identity_hash;
 
 thread_local Global<Object> custom_labels_als_handle;
 }
