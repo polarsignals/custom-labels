@@ -52,10 +52,10 @@ public:
   ~ClWrap() override;
   static void Init(Local<Object> exports);
 
-  ClWrap(const ClWrap&) = delete;
-  ClWrap& operator=(const ClWrap&) = delete;
-  ClWrap(ClWrap&&) = delete;
-  ClWrap& operator=(ClWrap&&) noexcept = delete;
+  ClWrap(const ClWrap &) = delete;
+  ClWrap &operator=(const ClWrap &) = delete;
+  ClWrap(ClWrap &&) = delete;
+  ClWrap &operator=(ClWrap &&) noexcept = delete;
 
 private:
   static void New(const v8::FunctionCallbackInfo<v8::Value> &args);
@@ -238,7 +238,8 @@ void StoreHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
 // TODO: Figure out why, so we can get rid of this.
 void GetStoredHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
   Isolate *isolate = args.GetIsolate();
-  Local<v8::Integer> ret {v8::Integer::New(isolate, custom_labels_als_identity_hash)};
+  Local<v8::Integer> ret{
+      v8::Integer::New(isolate, custom_labels_als_identity_hash)};
   args.GetReturnValue().Set(ret);
 }
 
