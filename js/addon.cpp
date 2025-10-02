@@ -52,6 +52,11 @@ public:
   ~ClWrap() override;
   static void Init(Local<Object> exports);
 
+  ClWrap(const ClWrap&) = delete;
+  ClWrap& operator=(const ClWrap&) = delete;
+  ClWrap(ClWrap&&) = delete;
+  ClWrap& operator=(ClWrap&&) noexcept = delete;
+
 private:
   static void New(const v8::FunctionCallbackInfo<v8::Value> &args);
   static void ToString(const v8::FunctionCallbackInfo<v8::Value> &args);
