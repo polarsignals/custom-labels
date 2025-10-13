@@ -16,6 +16,7 @@
         "js/*.cpp",
         "js/*.h",
         "js/*.js",
+        "js/*.ts",
         "src/*.h",
         "src/*.c",
         "src/*.cpp",
@@ -25,5 +26,9 @@
     "dependencies": {
         "bindings": "^1.5.0",
         "node-gyp": "^11.2.0"
+    },
+    "devDependencies": {
+        "@types/node": "^24.7.2",
+        "typescript": "^5.9.3"
     }
 }
