@@ -193,7 +193,11 @@ void ClWrap::ToString(const v8::FunctionCallbackInfo<v8::Value> &args) {
 }
 
 void ClWrap::Init(Local<Object> exports) {
+#if NODE_MAJOR_VERSION >= 26
+  Isolate *isolate = Isolate::GetCurrent();
+#else
   Isolate *isolate = exports->GetIsolate();
+#endif
   Local<Context> context = isolate->GetCurrentContext();
 
   Local<ObjectTemplate> addon_data_tpl = ObjectTemplate::New(isolate);
