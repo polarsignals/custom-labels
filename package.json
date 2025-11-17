@@ -1,6 +1,6 @@
 {
     "name": "@polarsignals/custom-labels",
-    "version": "0.3.4",
+    "version": "0.3.5",
     "description": "test",
     "main": "js/index.js",
     "scripts": {
@@ -8,7 +8,7 @@
         "install": "node build.js"
     },
     "author": "",
-    "license": "ISC",
+    "license": "Apache-2.0",
     "gypfile": true,
     "type": "cjs",
     "files": [
