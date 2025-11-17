@@ -2,7 +2,7 @@
     "name": "@polarsignals/custom-labels",
     "version": "0.3.5",
     "description": "test",
-    "main": "js/index.js",
+    "main": "index.js",
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1",
         "install": "node build.js"
@@ -12,18 +12,19 @@
     "gypfile": true,
     "type": "cjs",
     "files": [
-        "js/*.c",
-        "js/*.cpp",
-        "js/*.h",
-        "js/*.js",
-        "js/*.ts",
-        "src/*.h",
-        "src/*.c",
-        "src/*.cpp",
+        "*.c",
+        "*.cpp",
+        "*.h",
+        "*.js",
+        "*.ts",
+        "../src/*.h",
+        "../src/*.c",
+        "../src/*.cpp",
         "binding.gyp",
         "build.js"
     ],
     "dependencies": {
+        "@anthropic-ai/claude-code": "^2.0.42",
         "bindings": "^1.5.0",
         "node-gyp": "^11.2.0"
     },
