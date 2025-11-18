@@ -4,3 +4,4 @@ libcustomlabels.so
 node_modules/
 build/
 package-lock.json
+js/native
