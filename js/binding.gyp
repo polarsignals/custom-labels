@@ -23,8 +23,8 @@
             ],
             "sources": [
                 "addon.cpp",
-                "../src/customlabels.cpp",
-                "../src/hashmap.c"
+                "native/customlabels.cpp",
+                "native/hashmap.c"
             ],
         }
     ]

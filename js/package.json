@@ -17,9 +17,9 @@
         "*.h",
         "*.js",
         "*.ts",
-        "../src/*.h",
-        "../src/*.c",
-        "../src/*.cpp",
+        "native/*.h",
+        "native/*.c",
+        "native/*.cpp",
         "binding.gyp",
         "build.js"
     ],

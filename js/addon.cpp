@@ -1,6 +1,5 @@
 // addon.c
-#include "../src/customlabels.h"
-#include "../src/hashmap.h"
+#include "native/customlabels.h"
 
 #include <node.h>
 #include <node_object_wrap.h>
