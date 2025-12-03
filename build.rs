@@ -1,10 +1,10 @@
 fn main() {
-    println!("cargo:rerun-if-changed=src/customlabels.c");
+    println!("cargo:rerun-if-changed=src/customlabels.cpp");
     println!("cargo:rerun-if-changed=src/customlabels.h");
     println!("cargo:rerun-if-changed=./dlist");
 
     cc::Build::new()
-        .file("src/customlabels.c")
+        .file("src/customlabels.cpp")
         .compile("customlabels");
 
     println!("cargo:rustc-link-lib=static=customlabels");
