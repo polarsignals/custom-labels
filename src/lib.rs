@@ -61,6 +61,18 @@
 use std::ptr::{null_mut, NonNull};
 use std::{fmt, slice};
 
+// #[cfg(not(custom_labels_missing_buildrs_override))]
+// compile_error!(r#"You must call `custom_labels::build::emit_build_instructions();`
+// in build.rs; otherwise, profilers will not be able to find custom labels.
+
+// If you know what you're doing, and in the unlikely event
+// that you have a good reason to depend on the custom_labels library without
+// labels being visible to profilers, you may disable this error
+// by passing `--cfg custom_labels_missing_buildrs_override` to rustc while compiling this crate "#);
+
+#[cfg(feature = "tracing")]
+pub mod tracing;
+
 /// Low-level interface to the underlying C library.
 pub mod sys {
     #[allow(non_camel_case_types)]
@@ -166,6 +178,7 @@ pub struct Labelset {
 }
 
 unsafe impl Send for Labelset {}
+unsafe impl Sync for Labelset {}
 
 impl Labelset {
     /// Create a new label set.
@@ -256,6 +269,18 @@ impl Labelset {
                 .as_ref()
                 .map(|lbl| slice::from_raw_parts(lbl.value.buf, lbl.value.len))
         }
+    }
+
+    fn leak(self) -> NonNull<sys::Labelset> {
+        let rv = self.raw;
+        std::mem::forget(self);
+        rv
+    }
+
+    pub fn swap(self) -> Option<Self> {
+        let raw = self.leak();
+        let old = unsafe { sys::replace(raw.as_ptr()) };
+        NonNull::new(old).map(|raw| Self { raw })
     }
 }
 
