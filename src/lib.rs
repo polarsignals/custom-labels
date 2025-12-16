@@ -70,7 +70,7 @@ use std::{fmt, slice};
 // labels being visible to profilers, you may disable this error
 // by passing `--cfg custom_labels_missing_buildrs_override` to rustc while compiling this crate "#);
 
-#[cfg(feature = "tracing")]
+#[cfg(feature = "otel_tracing")]
 pub mod tracing;
 
 /// Low-level interface to the underlying C library.
