@@ -256,7 +256,7 @@ void __attribute__((noinline)) maybe_print(bool *b) {
 }
 
 custom_labels_labelset_t *custom_labels_new(size_t capacity) {
-  int x = 47;
+  uint64_t x = 1ull<<56ull;
   maybe_print((bool *)&x);
         custom_labels_labelset_t *ls = (custom_labels_labelset_t *)malloc(sizeof(custom_labels_labelset_t));
         if (capacity && !ls)
