@@ -252,7 +252,7 @@ int custom_labels_careful_set(custom_labels_labelset_t *ls, custom_labels_string
 
 custom_labels_labelset_t *custom_labels_new(size_t capacity) {
         custom_labels_labelset_t *ls = (custom_labels_labelset_t *)malloc(sizeof(custom_labels_labelset_t));
-        if (!ls)
+        if (capacity && !ls)
                 return NULL;
         custom_labels_label_t *storage = (custom_labels_label_t *)calloc(capacity, sizeof(custom_labels_label_t));
         if (!storage) {
