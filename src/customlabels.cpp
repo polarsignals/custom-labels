@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "customlabels.h"
 #include "util.h"
@@ -250,7 +251,13 @@ int custom_labels_careful_set(custom_labels_labelset_t *ls, custom_labels_string
         return 0;        
 }
 
+void __attribute__((noinline)) maybe_print(bool *b) {
+  if (!*b) printf("wtf\n");
+}
+
 custom_labels_labelset_t *custom_labels_new(size_t capacity) {
+  int x = 47;
+  maybe_print((bool *)&x);
         custom_labels_labelset_t *ls = (custom_labels_labelset_t *)malloc(sizeof(custom_labels_labelset_t));
         if (capacity && !ls)
                 return NULL;
