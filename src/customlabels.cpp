@@ -252,7 +252,7 @@ int custom_labels_careful_set(custom_labels_labelset_t *ls, custom_labels_string
 }
 
 void __attribute__((noinline)) maybe_print(bool *b) {
-  if (!*b) printf("wtf\n");
+  if (*b) printf("wtf\n");
 }
 
 custom_labels_labelset_t *custom_labels_new(size_t capacity) {
