@@ -13,6 +13,7 @@ readme = "README.md"
 
 [features]
 otel_tracing = ["tracing-subscriber", "tracing", "tracing-opentelemetry"]
+sanitized = []
 
 [build-dependencies]
 bindgen = { version = "0.70", default-features = false, features = ["runtime"] }

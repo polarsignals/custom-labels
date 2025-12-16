@@ -1,3 +1,24 @@
+trait BuildExt {
+    fn sanflags(&mut self) -> &mut Self;
+}
+
+impl BuildExt for cc::Build {
+    #[cfg(feature = "sanitized")]
+    fn sanflags(&mut self) -> &mut cc::Build {
+        self.flag("-fsanitize=address,undefined")
+            .flag("-O1")
+            .flag("-g")
+            .flag("-fno-omit-frame-pointer")
+            .flag("-fno-optimize-sibling-calls")
+            .flag("-static-libsan")
+    }
+
+    #[cfg(not(feature = "sanitized"))]
+    fn sanflags(&mut self) -> &mut cc::Build {
+        self
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=src/customlabels.cpp");
     println!("cargo:rerun-if-changed=src/customlabels.h");
@@ -5,9 +26,14 @@ fn main() {
 
     cc::Build::new()
         .file("src/customlabels.cpp")
+        .sanflags()
         .compile("customlabels");
 
+    // println!("cargo:rustc-link-arg=-fsanitize=address,undefined");
+    // println!("cargo:rustc-link-arg=-static-libsan");
     println!("cargo:rustc-link-lib=static=customlabels");
+    // println!("cargo:rustc-link-lib=asan");
+    // println!("cargo:rustc-link-lib=ubsan");
     println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
 
     // let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
