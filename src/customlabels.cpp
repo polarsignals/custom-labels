@@ -355,7 +355,7 @@ static int custom_labels_label_clone(custom_labels_label_t lbl, custom_labels_la
 }
 
 custom_labels_labelset_t *custom_labels_clone_with_capacity(const custom_labels_labelset_t *ls, size_t capacity) {
-        custom_labels_labelset_t *new_ = custom_labels_new(ls->count);
+        custom_labels_labelset_t *new_ = custom_labels_new(capacity);
         if (!new_)
                 return NULL;
         for (size_t i = 0; i < ls->count; ++i) {
