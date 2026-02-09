@@ -1,7 +1,8 @@
-CC = gcc
-CFLAGS ?= -O2 -g
+CXX = g++
+CXXFLAGS ?= -O2 -g
 TARGET = libcustomlabels.so
-SRCS = src/customlabels.c
+SRCS = src/customlabels.cpp
+HEADERS = src/customlabels.h src/util.h
 
 ARCH := $(shell uname -m)
 
@@ -13,11 +14,8 @@ else
     $(error only aarch64 and x86-64 are supported)
 endif
 
-$(TARGET): $(SRCS)
-	$(CC) $(CFLAGS) -ftls-model=global-dynamic -mtls-dialect=$(TLS_DIALECT) -fPIC -shared -o $(TARGET) $(SRCS)
-
-test_hashmap: src/test_hashmap.c src/hashmap.c
-	clang $(CFLAGS) -fsanitize=undefined -Isrc -o test_hashmap src/test_hashmap.c src/hashmap.c
+$(TARGET): $(SRCS) $(HEADERS)
+	$(CXX) $(CXXFLAGS) -ftls-model=global-dynamic -mtls-dialect=$(TLS_DIALECT) -fPIC -shared -o $(TARGET) $(SRCS)
 
 clean:
 	rm -f $(TARGET) test_hashmap
