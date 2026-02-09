@@ -1,6 +1,6 @@
 {
     "name": "@polarsignals/custom-labels",
-    "version": "0.3.7",
+    "version": "0.3.8",
     "description": "test",
     "main": "index.js",
     "scripts": {
@@ -25,7 +25,6 @@
         "build.js"
     ],
     "dependencies": {
-        "@anthropic-ai/claude-code": "^2.0.42",
         "bindings": "^1.5.0",
         "node-gyp": "^11.2.0"
     },
