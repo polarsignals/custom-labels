@@ -39,7 +39,7 @@ Executes the callback function with the specified labels attached to all CPU pro
 
 **Parameters:**
 - `callback` - Function to execute with labels applied
-- `...labelPairs` - Alternating key/value pairs for labels
+- `...labelPairs` - Alternating key/value pairs for labels. Values can be `string`, `boolean`, `number`, `null`, or `undefined` and are coerced to strings.
 
 **Synchronous callback:**
 ```javascript
