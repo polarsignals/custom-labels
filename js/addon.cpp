@@ -44,6 +44,20 @@ using v8::Value;
 
 const uint64_t CLWRAP_TOKEN_VALUE = 0xEC9EB507FB5D7903;
 
+static bool IsAllowedLabelValue(Local<Value> value) {
+  return value->IsString() || value->IsBoolean() || value->IsNumber() ||
+         value->IsUndefined() || value->IsNull();
+}
+
+static bool ToLabelString(Isolate *isolate, Local<Context> context,
+                          Local<Value> value, Local<String> *out) {
+  if (value->IsString()) {
+    *out = value.As<String>();
+    return true;
+  }
+  return value->ToString(context).ToLocal(out);
+}
+
 // Wrapper around a custom_labels_labelset_t,
 // with lifetime managed by the V8 GC.
 class ClWrap : public ObjectWrap {
@@ -74,6 +88,7 @@ ClWrap::ClWrap(custom_labels_labelset_t *underlying)
 
 void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value> &args) {
   Isolate *isolate = args.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
 
   if (!args.IsConstructCall()) [[unlikely]] {
     isolate->ThrowError("Must be called like `new ClWrap(old, (k, v)*`");
@@ -128,13 +143,21 @@ void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value> &args) {
   for (size_t i = 0; i < new_labels; ++i) {
     int k_idx = 2 * i + 1;
     int v_idx = 2 * i + 2;
-    if (!args[k_idx]->IsString() || !args[v_idx]->IsString()) {
-      isolate->ThrowError("Arguments other than the first must be strings");
+    if (!IsAllowedLabelValue(args[k_idx]) ||
+        !IsAllowedLabelValue(args[v_idx])) {
+      isolate->ThrowError(
+          "Arguments other than the first must be strings, booleans, numbers, "
+          "null, or undefined");
       return;
     }
 
-    Local<String> k = args[k_idx].As<String>();
-    Local<String> v = args[v_idx].As<String>();
+    Local<String> k;
+    Local<String> v;
+    if (!ToLabelString(isolate, context, args[k_idx], &k) ||
+        !ToLabelString(isolate, context, args[v_idx], &v)) {
+      isolate->ThrowError("Failed to convert label to string");
+      return;
+    }
 
     int k_len = k->Utf8Length(isolate);
     auto k_buf = std::make_unique<char[]>(k_len);
