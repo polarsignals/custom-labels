@@ -5,6 +5,8 @@ fn main() {
 
     cc::Build::new()
         .file("src/customlabels.cpp")
+        .std("c++17")
+        .cpp(true)
         .compile("customlabels");
 
     println!("cargo:rustc-link-lib=static=customlabels");
