@@ -8,15 +8,19 @@ description = "Provides a mechanism for OpenTelemetry SDKs to publish thread-lev
 repository = "https://github.com/open-telemetry/sig-profiling"
 readme = "README.md"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [build-dependencies]
 bindgen = { version = "0.72", default-features = false, features = ["runtime"] }
 cc = "1.0"
+prost-build = "0.13"
+protoc-bin-vendored = "3.0"
 
 [dev-dependencies]
 rand = "0.8.5"
+serial_test = "3.2"
 
 [dependencies]
+anyhow = "1.0"
 libc = "0.2"
 pin-project-lite = "0.2"
+prost = "0.13"
+rustix = { version = "1.1", features = ["param", "mm", "process", "fs", "time"] }
