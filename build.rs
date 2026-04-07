@@ -13,11 +13,6 @@ fn main() {
     println!("cargo:rustc-link-lib=static=customlabels");
     println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
 
-    // let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
-    // std::fs::copy("./dlist", &dlist_path).unwrap();
-
-    // println!("cargo::metadata=dlist-path={}", dlist_path);
-
     // Generate bindings using bindgen
     let bindings = bindgen::Builder::default()
         .header("src/customlabels.h")
@@ -25,9 +20,18 @@ fn main() {
         .generate()
         .expect("Unable to generate bindings");
 
-    // Write the bindings to the $OUT_DIR/bindings.rs file.
     let out_path = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
+
+    // Compile protobuf definitions
+    println!("cargo:rerun-if-changed=proto/");
+    std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap());
+    prost_build::Config::new()
+        .compile_protos(
+            &["proto/opentelemetry/proto/common/v1/process_context.proto"],
+            &["proto/"],
+        )
+        .expect("Failed to compile protobuf definitions");
 }
