@@ -1,12 +1,11 @@
 [package]
-name = "custom-labels"
-version = "0.4.5"
+name = "otel-thread-ctx"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
-keywords = ["profiling", "pprof", "polarsignals", "parca"]
-description = "Custom labels for profilers"
-homepage = "https://polarsignals.com"
-repository = "https://github.com/polarsignals/custom-labels"
+keywords = ["profiling", "pprof"]
+description = "Provides a mechanism for OpenTelemetry SDKs to publish thread-level attributes for out-of-process readers such as the OpenTelemetry eBPF profilers"
+repository = "https://github.com/open-telemetry/sig-profiling"
 readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
