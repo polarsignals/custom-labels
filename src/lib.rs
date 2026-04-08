@@ -4,15 +4,6 @@
 //! thread-level attributes for out-of-process readers such as the
 //! OpenTelemetry eBPF profilers.
 
-/// Low-level interface to the underlying C library.
-pub mod sys {
-    #[allow(non_camel_case_types)]
-    #[allow(non_upper_case_globals)]
-    #[allow(non_snake_case)]
-    #[allow(dead_code)]
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
-
 /// Generated protobuf types for OTel process context.
 pub mod proto {
     pub mod opentelemetry {
@@ -32,6 +23,7 @@ pub mod proto {
 }
 
 pub mod otel_process_ctx;
+pub mod otel_thread_ctx;
 
 /// Utilities for build scripts
 pub mod build {
