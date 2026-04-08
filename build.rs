@@ -1,29 +1,21 @@
 fn main() {
-    println!("cargo:rerun-if-changed=src/customlabels.cpp");
-    println!("cargo:rerun-if-changed=./build.rs");
-    println!("cargo:rerun-if-changed=src/customlabels.h");
+    println!("cargo:rerun-if-changed=src/tls_shim.c");
     println!("cargo:rerun-if-changed=./dlist");
 
-    cc::Build::new()
-        .file("src/customlabels.cpp")
-        .std("c++17")
-        .cpp(true)
-        .compile("customlabels");
+    // Only compile the TLS shim on Linux.
+    #[cfg(target_os = "linux")]
+    {
+        let mut build = cc::Build::new();
 
-    println!("cargo:rustc-link-lib=static=customlabels");
+        // On x86-64, force TLSDESC dialect as required by the OTel spec.
+        // On aarch64, TLSDESC is already the default.
+        #[cfg(target_arch = "x86_64")]
+        build.flag("-mtls-dialect=gnu2");
+
+        build.file("src/tls_shim.c").compile("tls_shim");
+    }
+
     println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
-
-    // Generate bindings using bindgen
-    let bindings = bindgen::Builder::default()
-        .header("src/customlabels.h")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("Unable to generate bindings");
-
-    let out_path = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    bindings
-        .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
 
     // Compile protobuf definitions
     println!("cargo:rerun-if-changed=proto/");

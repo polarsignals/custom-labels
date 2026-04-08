@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the publisher part of the [OTEL process
-//! context](https://github.com/open-telemetry/opentelemetry-specification/pull/4719)
+//! context](https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/profiles/4719-process-ctx.md)
 //!
 //! # A note on race conditions
 //!
@@ -35,7 +35,7 @@ pub mod linux {
         time::{clock_gettime, ClockId},
     };
 
-    use crate::proto::opentelemetry::proto::processcontext::v1development::ProcessContext;
+    use crate::opentelemetry::proto::processcontext::v1development::ProcessContext;
     use prost::Message;
 
     /// Current version of the process context format

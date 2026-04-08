@@ -4,39 +4,29 @@
 //! thread-level attributes for out-of-process readers such as the
 //! OpenTelemetry eBPF profilers.
 
-/// Low-level interface to the underlying C library.
-pub mod sys {
-    #[allow(non_camel_case_types)]
-    #[allow(non_upper_case_globals)]
-    #[allow(non_snake_case)]
-    #[allow(dead_code)]
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
-
 /// Generated protobuf types for OTel process context.
-pub mod proto {
-    pub mod opentelemetry {
-        pub mod proto {
-            pub mod common {
-                pub mod v1 {
-                    include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.common.v1.rs"));
-                }
+pub mod opentelemetry {
+    pub mod proto {
+        pub mod common {
+            pub mod v1 {
+                include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.common.v1.rs"));
             }
-            pub mod processcontext {
-                pub mod v1development {
-                    include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.processcontext.v1development.rs"));
-                }
+        }
+        pub mod processcontext {
+            pub mod v1development {
+                include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.processcontext.v1development.rs"));
             }
-            pub mod resource {
-                pub mod v1 {
-                    include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.resource.v1.rs"));
-                }
+        }
+        pub mod resource {
+            pub mod v1 {
+                include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.resource.v1.rs"));
             }
         }
     }
 }
 
 pub mod otel_process_ctx;
+pub mod otel_thread_ctx;
 
 /// Utilities for build scripts
 pub mod build {
