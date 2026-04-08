@@ -13,9 +13,8 @@ fn main() {
         build.flag("-mtls-dialect=gnu2");
 
         build.file("src/tls_shim.c").compile("tls_shim");
+        println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
     }
-
-    println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
 
     // Compile protobuf definitions
     println!("cargo:rerun-if-changed=proto/");

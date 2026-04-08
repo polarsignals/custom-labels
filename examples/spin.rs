@@ -3,8 +3,6 @@ use std::time::{Duration, Instant};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 
-use otel_thread_ctx::otel_process_ctx::linux as process_ctx;
-use otel_thread_ctx::otel_thread_ctx::linux::ThreadContext;
 use otel_thread_ctx::opentelemetry::proto::{
     common::v1::{any_value, AnyValue, ArrayValue, KeyValue},
     processcontext::v1development::ProcessContext,
@@ -68,8 +66,10 @@ fn main() {
         ],
     };
 
-    process_ctx::publish(&ctx).expect("failed to publish process context");
-    println!("Process context published");
+    match otel_process_ctx::publish(&ctx) {
+        Ok(()) => println!("Process context published"),
+        Err(e) => println!("Process context unavailable: {e}"),
+    }
 
     let trace_id = [1u8; 16];
     let span_id = [2u8; 8];
@@ -83,6 +83,6 @@ fn main() {
     }
 
     let _ = ThreadContext::detach();
-    process_ctx::unpublish().expect("failed to unpublish process context");
+    let _ = otel_process_ctx::unpublish();
     println!("Done");
 }

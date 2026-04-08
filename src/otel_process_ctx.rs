@@ -13,7 +13,7 @@
 
 #[cfg(target_os = "linux")]
 #[cfg(target_has_atomic = "64")]
-pub mod linux {
+mod linux {
     use std::{
         ffi::c_void,
         mem::ManuallyDrop,
@@ -589,4 +589,28 @@ pub mod linux {
             );
         }
     }
+}
+
+/// Publishes or updates the process context for it to be visible by external readers.
+///
+/// This is a no-op that returns an error on non-Linux platforms.
+pub fn publish(context: &crate::opentelemetry::proto::processcontext::v1development::ProcessContext) -> anyhow::Result<()> {
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    { linux::publish(context) }
+    #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+    {
+        let _ = context;
+        Err(anyhow::anyhow!("process context publishing is only supported on Linux"))
+    }
+}
+
+/// Unmaps the region used to share the process context. If no context has ever been published,
+/// this is a no-op.
+///
+/// Returns an error on non-Linux platforms.
+pub fn unpublish() -> anyhow::Result<()> {
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    { linux::unpublish() }
+    #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+    Err(anyhow::anyhow!("process context publishing is only supported on Linux"))
 }

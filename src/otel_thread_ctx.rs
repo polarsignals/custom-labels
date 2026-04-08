@@ -65,7 +65,7 @@
 //! stores during in-place updates.
 
 #[cfg(target_os = "linux")]
-pub mod linux {
+mod linux {
     use std::{
         ffi::c_void,
         mem,
@@ -643,3 +643,34 @@ pub mod linux {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+pub use linux::{ThreadContext, MAX_ATTRS_DATA_SIZE};
+
+#[cfg(not(target_os = "linux"))]
+mod stub {
+    /// Maximum size in bytes of the `attrs_data` field.
+    pub const MAX_ATTRS_DATA_SIZE: usize = 612;
+
+    /// A no-op thread context for non-Linux platforms.
+    pub struct ThreadContext;
+
+    impl ThreadContext {
+        pub fn new(_trace_id: [u8; 16], _span_id: [u8; 8], _attrs: &[(u8, &str)]) -> Self {
+            Self
+        }
+
+        pub fn attach(self) -> Option<ThreadContext> {
+            None
+        }
+
+        pub fn update(_trace_id: [u8; 16], _span_id: [u8; 8], _attrs: &[(u8, &str)]) {}
+
+        pub fn detach() -> Option<ThreadContext> {
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub use stub::{ThreadContext, MAX_ATTRS_DATA_SIZE};
