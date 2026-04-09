@@ -166,11 +166,7 @@ mod linux {
 
     impl ThreadContextRecord {
         /// Build a record with the given trace id, span id and attributes.
-        fn new(
-            trace_id: [u8; 16],
-            span_id: [u8; 8],
-            attrs: &[(u8, &str)],
-        ) -> Self {
+        fn new(trace_id: [u8; 16], span_id: [u8; 8], attrs: &[(u8, &str)]) -> Self {
             const { assert!(size_of::<ThreadContextRecord>() == 640) }
 
             let mut record = Self {
@@ -284,16 +280,8 @@ mod linux {
 
     impl ThreadContext {
         /// Create a new thread context with the given trace/span IDs and encoded attributes.
-        pub fn new(
-            trace_id: [u8; 16],
-            span_id: [u8; 8],
-            attrs: &[(u8, &str)],
-        ) -> Self {
-            Self::from(ThreadContextRecord::new(
-                trace_id,
-                span_id,
-                attrs,
-            ))
+        pub fn new(trace_id: [u8; 16], span_id: [u8; 8], attrs: &[(u8, &str)]) -> Self {
+            Self::from(ThreadContextRecord::new(trace_id, span_id, attrs))
         }
 
         /// Turn this thread context into a raw pointer to the underlying [ThreadContextRecord].
@@ -382,11 +370,7 @@ mod linux {
         ///
         /// If there's currently no attached context, `update` will create one, and is in this case
         /// equivalent to `ThreadContext::new(trace_id, span_id, attrs).attach()`.
-        pub fn update(
-            trace_id: [u8; 16],
-            span_id: [u8; 8],
-            attrs: &[(u8, &str)],
-        ) {
+        pub fn update(trace_id: [u8; 16], span_id: [u8; 8], attrs: &[(u8, &str)]) {
             if !Self::mutate_in_place(|record| {
                 record.trace_id = trace_id;
                 record.span_id = span_id;

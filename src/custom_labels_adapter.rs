@@ -51,16 +51,22 @@ fn key_index(key: &str) -> u8 {
         return idx;
     }
 
-    assert!(map.len() < 256, "custom-labels-adapter: max 256 distinct keys");
+    assert!(
+        map.len() < 256,
+        "custom-labels-adapter: max 256 distinct keys"
+    );
     let idx = map.len() as u8;
     map.insert(key.to_owned(), idx);
 
     // Build the ordered key list by sorting on index.
     let mut keys: Vec<_> = map.iter().map(|(k, &v)| (k.as_str(), v)).collect();
     keys.sort_by_key(|&(_, v)| v);
-    let attribute_key_map: Vec<AnyValue> = keys.iter().map(|(k, _)| AnyValue {
-        value: Some(any_value::Value::StringValue((*k).to_owned())),
-    }).collect();
+    let attribute_key_map: Vec<AnyValue> = keys
+        .iter()
+        .map(|(k, _)| AnyValue {
+            value: Some(any_value::Value::StringValue((*k).to_owned())),
+        })
+        .collect();
 
     let ctx = ProcessContext {
         resource: Some(Resource::default()),
@@ -173,8 +179,7 @@ mod tests {
     };
 
     use crate::opentelemetry::proto::{
-        common::v1::any_value,
-        processcontext::v1development::ProcessContext,
+        common::v1::any_value, processcontext::v1development::ProcessContext,
     };
 
     /// Layout must match the header written by otel_process_ctx.
@@ -224,26 +229,31 @@ mod tests {
 
     /// Helper: extract a string-valued extra_attribute by key name.
     fn extra_attr_string(ctx: &ProcessContext, key: &str) -> Option<String> {
-        ctx.extra_attributes.iter().find(|kv| kv.key == key).and_then(|kv| {
-            match kv.value.as_ref()?.value.as_ref()? {
+        ctx.extra_attributes
+            .iter()
+            .find(|kv| kv.key == key)
+            .and_then(|kv| match kv.value.as_ref()?.value.as_ref()? {
                 any_value::Value::StringValue(s) => Some(s.clone()),
                 _ => None,
-            }
-        })
+            })
     }
 
     /// Helper: extract the attribute_key_map array from extra_attributes.
     fn extra_attr_key_map(ctx: &ProcessContext) -> Option<Vec<String>> {
-        let kv = ctx.extra_attributes.iter().find(|kv| kv.key == "threadlocal.attribute_key_map")?;
+        let kv = ctx
+            .extra_attributes
+            .iter()
+            .find(|kv| kv.key == "threadlocal.attribute_key_map")?;
         match kv.value.as_ref()?.value.as_ref()? {
-            any_value::Value::ArrayValue(arr) => {
-                Some(arr.values.iter().filter_map(|v| {
-                    match v.value.as_ref()? {
+            any_value::Value::ArrayValue(arr) => Some(
+                arr.values
+                    .iter()
+                    .filter_map(|v| match v.value.as_ref()? {
                         any_value::Value::StringValue(s) => Some(s.clone()),
                         _ => None,
-                    }
-                }).collect())
-            }
+                    })
+                    .collect(),
+            ),
             _ => None,
         }
     }
