@@ -237,6 +237,25 @@ mod linux {
             self.attrs_data_size = offset as u16;
             fully_encoded
         }
+
+        /// Remove the last attribute by walking the packed encoding to find where it
+        /// starts, then shrinking `attrs_data_size` to exclude it. No-op if empty.
+        fn pop_last_attr(&mut self) {
+            let size = self.attrs_data_size as usize;
+            if size == 0 {
+                return;
+            }
+
+            let mut offset = 0;
+            let mut prev_offset = 0;
+            while offset < size {
+                prev_offset = offset;
+                let val_len = self.attrs_data[offset + 1] as usize;
+                offset += 2 + val_len;
+            }
+
+            self.attrs_data_size = prev_offset as u16;
+        }
     }
 
     impl Default for ThreadContextRecord {
@@ -340,10 +359,26 @@ mod linux {
             Self::swap(get_tls_slot(), self.into_raw())
         }
 
-        /// Update the currently attached record in-place. Sets `valid = 0` before the update and
-        /// `valid = 1` after, so a reader that fires between the two writes sees an inconsistent
-        /// record and skips it. Compiler fences prevent the compiler from reordering field writes
-        /// outside that window.
+        /// Mutate the currently attached record in-place with proper synchronization.
+        /// Sets `valid = 0` before calling `f`, and `valid = 1` after, with compiler
+        /// fences to prevent reordering. Returns `false` if no record is attached.
+        fn mutate_in_place(f: impl FnOnce(&mut ThreadContextRecord)) -> bool {
+            let slot = get_tls_slot();
+            if let Some(current) = unsafe { slot.load(Ordering::Relaxed).as_mut() } {
+                current.valid.store(0, Ordering::Relaxed);
+                compiler_fence(Ordering::SeqCst);
+
+                f(current);
+
+                compiler_fence(Ordering::SeqCst);
+                current.valid.store(1, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        }
+
+        /// Update the currently attached record in-place.
         ///
         /// If there's currently no attached context, `update` will create one, and is in this case
         /// equivalent to `ThreadContext::new(trace_id, span_id, attrs).attach()`.
@@ -352,27 +387,27 @@ mod linux {
             span_id: [u8; 8],
             attrs: &[(u8, &str)],
         ) {
-            let slot = get_tls_slot();
-
-            if let Some(current) = unsafe { slot.load(Ordering::Relaxed).as_mut() } {
-                current.valid.store(0, Ordering::Relaxed);
-                compiler_fence(Ordering::SeqCst);
-
-                current.trace_id = trace_id;
-                current.span_id = span_id;
-                current.set_attrs(attrs);
-
-                compiler_fence(Ordering::SeqCst);
-                current.valid.store(1, Ordering::Relaxed);
-            } else {
+            if !Self::mutate_in_place(|record| {
+                record.trace_id = trace_id;
+                record.span_id = span_id;
+                record.set_attrs(attrs);
+            }) {
                 // No need for `AcqRel`, see [^tls-slot-ordering].
                 compiler_fence(Ordering::Release);
                 // `ThreadContext::new` already initialises `valid = 1`.
                 let _ = Self::swap(
-                    slot,
+                    get_tls_slot(),
                     ThreadContext::new(trace_id, span_id, attrs).into_raw(),
                 );
             }
+        }
+
+        /// Remove the last attribute from the currently attached record. This is cheaper
+        /// than a full [`update`](Self::update) when the caller knows the last entry is the
+        /// one to remove (e.g. LIFO label scopes). No-op if there is no attached context or
+        /// the attrs are already empty.
+        pub fn pop_last_attr() {
+            Self::mutate_in_place(|record| record.pop_last_attr());
         }
 
         /// Detach the current record from the TLS slot. Writes null to the slot and returns the
@@ -665,6 +700,8 @@ mod stub {
         }
 
         pub fn update(_trace_id: [u8; 16], _span_id: [u8; 8], _attrs: &[(u8, &str)]) {}
+
+        pub fn pop_last_attr() {}
 
         pub fn detach() -> Option<ThreadContext> {
             None
