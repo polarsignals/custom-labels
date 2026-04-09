@@ -10,13 +10,13 @@ repository = "https://github.com/polarsignals/custom-labels"
 readme = "README.md"
 
 [build-dependencies]
-cc = "1.0"
-prost-build = "0.13"
-protoc-bin-vendored = "3.0"
+cc = "1.2"
+prost-build = "0.14"
+protoc-bin-vendored = "3.2"
 
 [dev-dependencies]
-rand = "0.8.5"
-serial_test = "3.2"
+rand = "0.10"
+serial_test = "3.4"
 
 [dependencies]
 anyhow = "1.0"

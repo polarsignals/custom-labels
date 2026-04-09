@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::RngExt;
 
 use otel_thread_ctx::opentelemetry::proto::{
     common::v1::{any_value, AnyValue, ArrayValue, KeyValue},
@@ -13,8 +13,8 @@ use otel_thread_ctx::otel_thread_ctx::ThreadContext;
 
 fn rand_str() -> String {
     String::from_utf8(
-        rand::thread_rng()
-            .sample_iter(&Alphanumeric)
+        rand::rng()
+            .sample_iter(Alphanumeric)
             .take(16)
             .collect::<Vec<_>>(),
     )
