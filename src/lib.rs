@@ -9,22 +9,32 @@ pub mod opentelemetry {
     pub mod proto {
         pub mod common {
             pub mod v1 {
-                include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.common.v1.rs"));
+                include!(concat!(
+                    env!("OUT_DIR"),
+                    "/opentelemetry.proto.common.v1.rs"
+                ));
             }
         }
         pub mod processcontext {
             pub mod v1development {
-                include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.processcontext.v1development.rs"));
+                include!(concat!(
+                    env!("OUT_DIR"),
+                    "/opentelemetry.proto.processcontext.v1development.rs"
+                ));
             }
         }
         pub mod resource {
             pub mod v1 {
-                include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.resource.v1.rs"));
+                include!(concat!(
+                    env!("OUT_DIR"),
+                    "/opentelemetry.proto.resource.v1.rs"
+                ));
             }
         }
     }
 }
 
+pub mod custom_labels_adapter;
 pub mod otel_process_ctx;
 pub mod otel_thread_ctx;
 
