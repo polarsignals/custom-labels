@@ -5,6 +5,8 @@ The current maintainers of this project are:
 * Brennan Vincent
 * Tommy Reilly
 * Frederic Branczyk
+* Ivo Anjo
+* Scott Gerring
 
 # Decision-making and Rights of Maintainers
 
