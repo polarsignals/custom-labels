@@ -1,33 +1,28 @@
 fn main() {
-    println!("cargo:rerun-if-changed=src/customlabels.cpp");
-    println!("cargo:rerun-if-changed=./build.rs");
-    println!("cargo:rerun-if-changed=src/customlabels.h");
+    println!("cargo:rerun-if-changed=src/tls_shim.c");
     println!("cargo:rerun-if-changed=./dlist");
 
-    cc::Build::new()
-        .file("src/customlabels.cpp")
-        .std("c++17")
-        .cpp(true)
-        .compile("customlabels");
+    // Only compile the TLS shim on Linux.
+    #[cfg(target_os = "linux")]
+    {
+        let mut build = cc::Build::new();
 
-    println!("cargo:rustc-link-lib=static=customlabels");
-    println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
+        // On x86-64, force TLSDESC dialect as required by the OTel spec.
+        // On aarch64, TLSDESC is already the default.
+        #[cfg(target_arch = "x86_64")]
+        build.flag("-mtls-dialect=gnu2");
 
-    // let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
-    // std::fs::copy("./dlist", &dlist_path).unwrap();
+        build.file("src/tls_shim.c").compile("tls_shim");
+        println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
+    }
 
-    // println!("cargo::metadata=dlist-path={}", dlist_path);
-
-    // Generate bindings using bindgen
-    let bindings = bindgen::Builder::default()
-        .header("src/customlabels.h")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("Unable to generate bindings");
-
-    // Write the bindings to the $OUT_DIR/bindings.rs file.
-    let out_path = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    bindings
-        .write_to_file(out_path.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
+    // Compile protobuf definitions
+    println!("cargo:rerun-if-changed=proto/");
+    std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap());
+    prost_build::Config::new()
+        .compile_protos(
+            &["proto/opentelemetry/proto/common/v1/process_context.proto"],
+            &["proto/"],
+        )
+        .expect("Failed to compile protobuf definitions");
 }
