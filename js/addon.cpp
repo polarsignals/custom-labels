@@ -1,220 +1,319 @@
-// addon.c
-#include "native/customlabels.h"
+// Node.js writer for the OTEP-4947 Thread Local Context Record, adapted for
+// the Node.js asynchronous context model. The record is wrapped in a JS object
+// (CtxWrap) and stored in an AsyncLocalStorage instance; an out-of-process
+// reader discovers it by walking the V8 isolate's ContinuationPreservedEmbedderData
+// to the AsyncContextFrame (a JS Map), looking up the ALS instance as the key,
+// reading the resulting CtxWrap, and finally the record it owns.
 
 #include <node.h>
 #include <node_object_wrap.h>
-#include <v8-internal.h>
 
-#include <assert.h>
-#include <stdbool.h>
-#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include <memory>
+
+// Symbols read from outside the process via TLSDESC. They identify, for the
+// current V8 isolate's thread, which AsyncLocalStorage instance the reader
+// must look up inside the AsyncContextFrame map, and its identity hash so the
+// reader can restrict the search to a single hash bucket.
 extern "C" {
 using v8::Global;
 using v8::Object;
-thread_local int custom_labels_als_identity_hash;
 
-thread_local Global<Object> custom_labels_als_handle;
+__attribute__((visibility("default")))
+thread_local int otel_thread_ctx_nodejs_v1_als_identity_hash;
+
+__attribute__((visibility("default")))
+thread_local Global<Object> otel_thread_ctx_nodejs_v1_als_handle;
 }
 
-namespace custom_labels {
+namespace otel_thread_ctx_nodejs {
 using node::ObjectWrap;
+using v8::Array;
 using v8::Context;
-using v8::Exception;
 using v8::Function;
 using v8::FunctionCallbackInfo;
 using v8::FunctionTemplate;
 using v8::Global;
+using v8::Int32;
+using v8::Integer;
 using v8::Isolate;
 using v8::Local;
+using v8::MaybeLocal;
 using v8::NewStringType;
 using v8::Object;
-using v8::ObjectTemplate;
 using v8::String;
+using v8::Uint8Array;
 using v8::Value;
 
-#define hm custom_labels_async_hashmap
+// Maximum size of the variable-length attribute payload. Chosen so the total
+// record size is exactly 640 bytes, matching libdd-otel-thread-ctx and staying
+// within the OTEP-recommended 640-byte limit for eBPF readers.
+constexpr size_t MAX_ATTRS_DATA_SIZE = 612;
 
-#define hm_alloc custom_labels_hm_alloc
-#define hm_free custom_labels_hm_free
-#define hm_insert custom_labels_hm_insert
-#define hm_get custom_labels_hm_get
-#define hm_delete custom_labels_hm_delete
+// Exact OTEP-4947 layout. Total: 28-byte header + 612-byte attrs payload.
+// Field offsets are statically verified below.
+struct OtelThreadCtxRecord {
+  uint8_t trace_id[16];                    // offset 0
+  uint8_t span_id[8];                      // offset 16
+  uint8_t valid;                           // offset 24
+  uint8_t reserved;                        // offset 25
+  uint16_t attrs_data_size;                // offset 26
+  uint8_t attrs_data[MAX_ATTRS_DATA_SIZE]; // offset 28
+};
+static_assert(sizeof(OtelThreadCtxRecord) == 640,
+              "OTEP thread-ctx record must be exactly 640 bytes");
+static_assert(offsetof(OtelThreadCtxRecord, trace_id) == 0, "trace_id offset");
+static_assert(offsetof(OtelThreadCtxRecord, span_id) == 16, "span_id offset");
+static_assert(offsetof(OtelThreadCtxRecord, valid) == 24, "valid offset");
+static_assert(offsetof(OtelThreadCtxRecord, reserved) == 25, "reserved offset");
+static_assert(offsetof(OtelThreadCtxRecord, attrs_data_size) == 26,
+              "attrs_data_size offset");
+static_assert(offsetof(OtelThreadCtxRecord, attrs_data) == 28,
+              "attrs_data offset");
 
-const uint64_t CLWRAP_TOKEN_VALUE = 0xEC9EB507FB5D7903;
+// RTTI marker the out-of-process reader uses to recognize a CtxWrap. New value
+// distinct from the legacy custom-labels CLWRAP_TOKEN_VALUE so stale readers
+// don't misinterpret a record laid out per the OTEP-4947 format.
+constexpr uint64_t CTXWRAP_TOKEN_VALUE = 0xC7E1B57E54B5A2D1ull;
 
-static bool IsAllowedLabelValue(Local<Value> value) {
-  return value->IsString() || value->IsBoolean() || value->IsNumber() ||
-         value->IsUndefined() || value->IsNull();
-}
-
-static bool ToLabelString(Local<Context> context, Local<Value> value,
-                          Local<String> *out) {
-  if (value->IsString()) {
-    *out = value.As<String>();
-    return true;
-  }
-  return value->ToString(context).ToLocal(out);
-}
-
-// Wrapper around a custom_labels_labelset_t,
-// with lifetime managed by the V8 GC.
-class ClWrap : public ObjectWrap {
-public:
-  ~ClWrap() override;
+// Wraps a heap-allocated OtelThreadCtxRecord. Lifetime is managed by V8 GC:
+// when no JS code (or AsyncLocalStorage entry) holds a reference, the record
+// is freed.
+//
+// Layout note for the reader: `token_` and `record_` are non-private only
+// conceptually (they are private to C++) but their byte positions within
+// CtxWrap are part of the reader contract. They are the first two fields
+// after the node::ObjectWrap base subobject. Keep them in this order.
+class CtxWrap : public ObjectWrap {
+ public:
+  ~CtxWrap() override;
   static void Init(Local<Object> exports);
 
-  ClWrap(const ClWrap &) = delete;
-  ClWrap &operator=(const ClWrap &) = delete;
-  ClWrap(ClWrap &&) = delete;
-  ClWrap &operator=(ClWrap &&) noexcept = delete;
+  CtxWrap(const CtxWrap &) = delete;
+  CtxWrap &operator=(const CtxWrap &) = delete;
+  CtxWrap(CtxWrap &&) = delete;
+  CtxWrap &operator=(CtxWrap &&) noexcept = delete;
 
-private:
-  static void New(const v8::FunctionCallbackInfo<v8::Value> &args);
-  static void ToString(const v8::FunctionCallbackInfo<v8::Value> &args);
-  custom_labels_labelset_t *underlying_;
-  // Homemade RTTI. If the bytes at this address equal
-  // CLWRAP_TOKEN_VALUE, the agent knows it's looking at
-  // an element of ClWrap.
-  uint64_t __attribute__((unused)) token_;
-  explicit ClWrap(custom_labels_labelset_t *underlying);
+ private:
+  static void New(const FunctionCallbackInfo<Value> &args);
+  static void Bytes(const FunctionCallbackInfo<Value> &args);
+
+  uint64_t token_;
+  OtelThreadCtxRecord *record_;
+
+  explicit CtxWrap(OtelThreadCtxRecord *record);
 };
 
-ClWrap::~ClWrap() { custom_labels_free(underlying_); }
+CtxWrap::~CtxWrap() { delete record_; }
 
-ClWrap::ClWrap(custom_labels_labelset_t *underlying)
-    : underlying_(underlying), token_(CLWRAP_TOKEN_VALUE) {}
+CtxWrap::CtxWrap(OtelThreadCtxRecord *record)
+    : token_(CTXWRAP_TOKEN_VALUE), record_(record) {}
 
-void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value> &args) {
+static bool HexNibble(uint8_t c, uint8_t *out) {
+  if (c >= '0' && c <= '9') {
+    *out = (uint8_t)(c - '0');
+    return true;
+  }
+  if (c >= 'a' && c <= 'f') {
+    *out = (uint8_t)(c - 'a' + 10);
+    return true;
+  }
+  if (c >= 'A' && c <= 'F') {
+    *out = (uint8_t)(c - 'A' + 10);
+    return true;
+  }
+  return false;
+}
+
+// Parse `expected_bytes` raw bytes from a JS value. The value must be either a
+// Uint8Array of exactly `expected_bytes` bytes, or a hex string of exactly
+// `expected_bytes * 2` ASCII hex characters. Returns true on success.
+static bool ParseFixedBytes(Isolate *isolate, Local<Value> value,
+                            size_t expected_bytes, uint8_t *out) {
+  if (value->IsUint8Array()) {
+    Local<Uint8Array> arr = value.As<Uint8Array>();
+    if (arr->ByteLength() != expected_bytes) return false;
+    uint8_t *base = static_cast<uint8_t *>(arr->Buffer()->Data()) +
+                    arr->ByteOffset();
+    memcpy(out, base, expected_bytes);
+    return true;
+  }
+  if (value->IsString()) {
+    Local<String> s = value.As<String>();
+    int utf8_len = s->Utf8Length(isolate);
+    if ((size_t)utf8_len != expected_bytes * 2) return false;
+    std::unique_ptr<char[]> buf(new char[utf8_len]);
+    s->WriteUtf8(isolate, buf.get(), utf8_len, nullptr,
+                 String::NO_NULL_TERMINATION);
+    for (size_t i = 0; i < expected_bytes; ++i) {
+      uint8_t hi, lo;
+      if (!HexNibble((uint8_t)buf[i * 2], &hi) ||
+          !HexNibble((uint8_t)buf[i * 2 + 1], &lo)) {
+        return false;
+      }
+      out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+  }
+  return false;
+}
+
+// Convert an 8-byte raw span ID to a 16-character lowercase hex string,
+// written into `out` (which must have room for 16 bytes).
+static void EncodeSpanIdHex(const uint8_t span_id[8], uint8_t out[16]) {
+  static const char HEX[] = "0123456789abcdef";
+  for (size_t i = 0; i < 8; ++i) {
+    out[i * 2] = (uint8_t)HEX[span_id[i] >> 4];
+    out[i * 2 + 1] = (uint8_t)HEX[span_id[i] & 0xF];
+  }
+}
+
+void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
 
-  if (!args.IsConstructCall()) [[unlikely]] {
-    isolate->ThrowError("Must be called like `new ClWrap(old, (k, v)*`");
+  if (!args.IsConstructCall()) {
+    isolate->ThrowError("CtxWrap must be called with `new`");
     return;
   }
-  if (args.Length() % 2 == 0) {
-    isolate->ThrowError("Must be called like `new ClWrap(old, (k, v)*)`");
+  if (args.Length() != 4) {
+    isolate->ThrowError(
+        "CtxWrap expects 4 arguments: traceId, spanId, localRootSpanId, "
+        "attributes");
     return;
   }
 
-  size_t new_labels = args.Length() / 2;
+  // Value-initialize so all bytes start at 0, then set valid=1.
+  std::unique_ptr<OtelThreadCtxRecord> record(new OtelThreadCtxRecord{});
+  record->valid = 1;
 
-  // args[0] is the old ls, args[n+1] is the nth key, args[n+2] is the nth
-  // value.
-  custom_labels_labelset_t *old = NULL;
-  if (!args[0]->IsUndefined()) {
-    if (!args[0]->IsObject()) {
-      isolate->ThrowError(
-          "First argument must be the old object or `undefined`");
-      return;
-    }
-    ClWrap *old_wrap = ObjectWrap::Unwrap<ClWrap>(args[0].As<Object>());
-    if (!old_wrap || old_wrap->token_ != CLWRAP_TOKEN_VALUE) {
-      // TODO: Better way to do this?
-      // https://stackoverflow.com/questions/8994196/how-to-check-for-correct-type-when-calling-objectwrapunwrap-in-a-nodejs-add-on
-      isolate->ThrowError(
-          "First argument must be the old object or `undefined`");
-      return;
-    }
-    old = old_wrap->underlying_;
+  if (!ParseFixedBytes(isolate, args[0], 16, record->trace_id)) {
+    isolate->ThrowError(
+        "traceId must be a 16-byte Uint8Array or a 32-char hex string");
+    return;
+  }
+  if (!ParseFixedBytes(isolate, args[1], 8, record->span_id)) {
+    isolate->ThrowError(
+        "spanId must be an 8-byte Uint8Array or a 16-char hex string");
+    return;
   }
 
-  custom_labels_labelset_t *underlying;
-  if (old) {
-    underlying = custom_labels_clone_with_capacity(
-        old, custom_labels_count(old) + new_labels);
-    if (!underlying) {
-      isolate->ThrowError("allocation failed");
-      return;
-    }
-  } else {
-    underlying = custom_labels_new(new_labels);
-    if (!underlying) {
-      isolate->ThrowError("allocation failed");
-      return;
-    }
-  }
-
-  ClWrap *new_ = new ClWrap(underlying);
-  auto me = std::unique_ptr<ClWrap>(new_);
-
-  for (size_t i = 0; i < new_labels; ++i) {
-    int k_idx = 2 * i + 1;
-    int v_idx = 2 * i + 2;
-    if (!IsAllowedLabelValue(args[k_idx]) ||
-        !IsAllowedLabelValue(args[v_idx])) {
+  size_t attrs_offset = 0;
+  const bool has_root_span = !args[2]->IsUndefined() && !args[2]->IsNull();
+  if (has_root_span) {
+    uint8_t root_span[8];
+    if (!ParseFixedBytes(isolate, args[2], 8, root_span)) {
       isolate->ThrowError(
-          "Arguments other than the first must be strings, booleans, numbers, "
-          "null, or undefined");
+          "localRootSpanId must be an 8-byte Uint8Array or a 16-char hex "
+          "string");
       return;
     }
+    // Index 0 entry: key_index=0, val_len=16, val=<16 lowercase hex chars>.
+    record->attrs_data[0] = 0;
+    record->attrs_data[1] = 16;
+    EncodeSpanIdHex(root_span, &record->attrs_data[2]);
+    attrs_offset = 18;
+  }
 
-    Local<String> k;
-    Local<String> v;
-    if (!ToLabelString(context, args[k_idx], &k) ||
-        !ToLabelString(context, args[v_idx], &v)) {
-      isolate->ThrowError("Failed to convert label to string");
+  if (!args[3]->IsUndefined() && !args[3]->IsNull()) {
+    if (!args[3]->IsArray()) {
+      isolate->ThrowError(
+          "attributes must be an array of [keyIndex, value] pairs or "
+          "undefined");
       return;
     }
+    Local<Array> attrs = args[3].As<Array>();
+    uint32_t n = attrs->Length();
+    for (uint32_t i = 0; i < n; ++i) {
+      Local<Value> pair_val;
+      if (!attrs->Get(context, i).ToLocal(&pair_val)) return;
+      if (!pair_val->IsArray()) {
+        isolate->ThrowError(
+            "each attribute must be a [keyIndex, value] pair");
+        return;
+      }
+      Local<Array> pair = pair_val.As<Array>();
+      if (pair->Length() != 2) {
+        isolate->ThrowError(
+            "each attribute must be a [keyIndex, value] pair");
+        return;
+      }
 
-    int k_len = k->Utf8Length(isolate);
-    auto k_buf = std::make_unique<char[]>(k_len);
+      Local<Value> key_val, val_val;
+      if (!pair->Get(context, 0).ToLocal(&key_val)) return;
+      if (!pair->Get(context, 1).ToLocal(&val_val)) return;
 
-    int v_len = v->Utf8Length(isolate);
-    auto v_buf = std::make_unique<char[]>(v_len);
+      if (!key_val->IsInt32()) {
+        isolate->ThrowError(
+            "attribute keyIndex must be an integer in [0, 255]");
+        return;
+      }
+      int32_t k = key_val.As<Int32>()->Value();
+      if (k < 0 || k > 255) {
+        isolate->ThrowError(
+            "attribute keyIndex must be an integer in [0, 255]");
+        return;
+      }
+      uint8_t key_idx = (uint8_t)k;
+      if (has_root_span && key_idx == 0) {
+        isolate->ThrowError(
+            "attribute keyIndex 0 is reserved when localRootSpanId is "
+            "provided");
+        return;
+      }
 
-    k->WriteUtf8(isolate, k_buf.get(), k_len, nullptr,
-                 String::NO_NULL_TERMINATION);
-    v->WriteUtf8(isolate, v_buf.get(), v_len, nullptr,
-                 String::NO_NULL_TERMINATION);
-
-    custom_labels_string_t key{(size_t)k_len, (unsigned char *)k_buf.get()};
-    custom_labels_string_t value{(size_t)v_len, (unsigned char *)v_buf.get()};
-    int err = custom_labels_set(underlying, key, value, nullptr);
-
-    if (err) {
-      // TODO - better error message here.
-      isolate->ThrowError("Underlying custom_labels_set call failed: probably "
-                          "an allocation error.");
-      return;
+      Local<String> v;
+      if (!val_val->ToString(context).ToLocal(&v)) {
+        isolate->ThrowError("failed to coerce attribute value to string");
+        return;
+      }
+      int v_utf8_len = v->Utf8Length(isolate);
+      // Spec caps value length at 255 bytes; silently truncate longer values.
+      uint8_t v_len = v_utf8_len > 255 ? 255 : (uint8_t)v_utf8_len;
+      size_t needed = 2u + (size_t)v_len;
+      if (attrs_offset + needed > MAX_ATTRS_DATA_SIZE) {
+        // Total attribute payload would overflow the 612-byte budget; drop
+        // this and any remaining attributes, matching libdd-otel-thread-ctx.
+        break;
+      }
+      record->attrs_data[attrs_offset] = key_idx;
+      record->attrs_data[attrs_offset + 1] = v_len;
+      v->WriteUtf8(isolate,
+                   reinterpret_cast<char *>(&record->attrs_data[attrs_offset + 2]),
+                   v_len, nullptr, String::NO_NULL_TERMINATION);
+      attrs_offset += needed;
     }
   }
 
-  me.release()->Wrap(args.This());
+  record->attrs_data_size = (uint16_t)attrs_offset;
 
+  CtxWrap *self = new CtxWrap(record.release());
+  self->Wrap(args.This());
   args.GetReturnValue().Set(args.This());
 }
 
-void ClWrap::ToString(const v8::FunctionCallbackInfo<v8::Value> &args) {
+// Debug accessor: returns the entire 640-byte record as a fresh Uint8Array.
+// Not part of the stable API; intended for tests and out-of-process-reader
+// development.
+void CtxWrap::Bytes(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
-
-  ClWrap *obj = ObjectWrap::Unwrap<ClWrap>(args.This());
-  if (!obj) {
-    isolate->ThrowError("Invalid ClWrap object");
+  CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
+  if (!self || self->token_ != CTXWRAP_TOKEN_VALUE) {
+    isolate->ThrowError("not a CtxWrap");
     return;
   }
-
-  custom_labels_string_t debug_str;
-  int result = custom_labels_debug_string(obj->underlying_, &debug_str);
-
-  if (result != 0) {
-    isolate->ThrowError("Failed to generate debug string");
-    return;
-  }
-
-  Local<String> js_string =
-      String::NewFromUtf8(isolate, (const char *)debug_str.buf,
-                          NewStringType::kNormal, debug_str.len)
-          .ToLocalChecked();
-
-  free((void *)debug_str.buf);
-
-  args.GetReturnValue().Set(js_string);
+  Local<v8::ArrayBuffer> buf =
+      v8::ArrayBuffer::New(isolate, sizeof(OtelThreadCtxRecord));
+  memcpy(buf->Data(), self->record_, sizeof(OtelThreadCtxRecord));
+  args.GetReturnValue().Set(
+      Uint8Array::New(buf, 0, sizeof(OtelThreadCtxRecord)));
 }
 
-void ClWrap::Init(Local<Object> exports) {
+void CtxWrap::Init(Local<Object> exports) {
 #if NODE_MAJOR_VERSION >= 26
   Isolate *isolate = Isolate::GetCurrent();
 #else
@@ -222,60 +321,66 @@ void ClWrap::Init(Local<Object> exports) {
 #endif
   Local<Context> context = isolate->GetCurrentContext();
 
-  Local<ObjectTemplate> addon_data_tpl = ObjectTemplate::New(isolate);
-  addon_data_tpl->SetInternalFieldCount(1); // 1 field for the ClWrap::New()
-  Local<Object> addon_data =
-      addon_data_tpl->NewInstance(context).ToLocalChecked();
-
-  // Prepare constructor template
-  Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New, addon_data);
-  tpl->SetClassName(String::NewFromUtf8(isolate, "ClWrap").ToLocalChecked());
+  Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
+  tpl->SetClassName(String::NewFromUtf8(isolate, "CtxWrap").ToLocalChecked());
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
-  // Add toString method
   tpl->PrototypeTemplate()->Set(
-      String::NewFromUtf8(isolate, "toString").ToLocalChecked(),
-      FunctionTemplate::New(isolate, ToString));
+      String::NewFromUtf8(isolate, "bytes").ToLocalChecked(),
+      FunctionTemplate::New(isolate, Bytes));
 
   Local<Function> constructor = tpl->GetFunction(context).ToLocalChecked();
-  addon_data->SetInternalField(0, constructor);
   exports
-      ->Set(context, String::NewFromUtf8(isolate, "ClWrap").ToLocalChecked(),
+      ->Set(context, String::NewFromUtf8(isolate, "CtxWrap").ToLocalChecked(),
             constructor)
       .FromJust();
 }
 
-void StoreHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
-  Isolate *isolate = args.GetIsolate();
-  if (!args[0]->IsObject()) {
-    isolate->ThrowError("First argument must be an object.");
-  }
-  Local<Object> obj = args[0].As<Object>();
-  int hash = obj->GetIdentityHash();
-  custom_labels_als_identity_hash = hash;
-  custom_labels_als_handle = Global<Object>(isolate, obj);
+// Reset the Global<Object> before the isolate is torn down. The Global lives
+// in thread-local storage and its destructor only runs at thread exit, which
+// on the main thread happens after the isolate is already gone — causing a
+// segfault. Registering this as a per-isolate cleanup hook the first time
+// StoreAls is called keeps the handle safely scoped to the isolate.
+static void ResetAlsHandle(void * /*arg*/) {
+  otel_thread_ctx_nodejs_v1_als_handle.Reset();
 }
 
-// parca-agent can't see the hash symbol on x86 if we don't have
-// this function that reads it.
-// Is the linker stripping it out due to lack of ever being read?
-// Not sure; FWIW `nm` *can* see it.
-//
-// TODO: Figure out why, so we can get rid of this.
-void GetStoredHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
+void StoreAls(const FunctionCallbackInfo<Value> &args) {
+  static thread_local bool cleanup_registered = false;
+
   Isolate *isolate = args.GetIsolate();
-  Local<v8::Integer> ret{
-      v8::Integer::New(isolate, custom_labels_als_identity_hash)};
-  args.GetReturnValue().Set(ret);
+  if (!args[0]->IsObject()) {
+    isolate->ThrowError("First argument must be the AsyncLocalStorage object.");
+    return;
+  }
+  Local<Object> obj = args[0].As<Object>();
+  otel_thread_ctx_nodejs_v1_als_identity_hash = obj->GetIdentityHash();
+  otel_thread_ctx_nodejs_v1_als_handle = Global<Object>(isolate, obj);
+  if (!cleanup_registered) {
+    node::AddEnvironmentCleanupHook(isolate, ResetAlsHandle, nullptr);
+    cleanup_registered = true;
+  }
+}
+
+// Without a function that explicitly reads the TLS variable, on x86 the
+// linker may strip the symbol from the dynamic symbol table even though `nm`
+// still reports it, breaking out-of-process discovery. This is the same
+// workaround as the legacy custom-labels addon.
+void GetStoredAlsHash(const FunctionCallbackInfo<Value> &args) {
+  Isolate *isolate = args.GetIsolate();
+  args.GetReturnValue().Set(
+      Integer::New(isolate, otel_thread_ctx_nodejs_v1_als_identity_hash));
 }
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
 NODE_MODULE_INIT() {
-  ClWrap::Init(exports);
-  NODE_SET_METHOD(exports, "storeHash", StoreHash);
+  CtxWrap::Init(exports);
+  NODE_SET_METHOD(exports, "storeAls", StoreAls);
+  NODE_SET_METHOD(exports, "getStoredAlsHash", GetStoredAlsHash);
 }
-} // namespace custom_labels
 
 #pragma GCC diagnostic pop
+
+} // namespace otel_thread_ctx_nodejs

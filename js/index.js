@@ -1,9 +1,7 @@
-let withLabels;
-let curLabels;
+let withContext;
+let makeNamedContext;
 
-let hook;
-
-if (process.platform == 'linux') {
+if (process.platform === 'linux') {
     const bindings = require('bindings');
 
     const addon = bindings('customlabels');
@@ -33,31 +31,94 @@ if (process.platform == 'linux') {
             return;
         const err = asyncContextFrameError();
         if (err) {
-            throw new Error(`Custom labels requires async_context_frame support, which is unavailable: ${err}.`);
+            throw new Error(`otel thread-ctx writer requires async_context_frame support, which is unavailable: ${err}.`);
         }
         als = new AsyncLocalStorage();
-        addon.storeHash(als);
+        addon.storeAls(als);
     }
 
-    curLabels = function() {
+    withContext = function (fn, opts) {
+        if (!opts || typeof opts !== 'object') {
+            throw new TypeError('withContext requires an options object');
+        }
         ensureHook();
-
-        return als.getStore();
+        const wrap = new addon.CtxWrap(
+            opts.traceId,
+            opts.spanId,
+            opts.localRootSpanId,
+            opts.attributes,
+        );
+        return als.run(wrap, fn);
     };
-    
-    withLabels = function(f, ...kvs) {
-        ensureHook();
-        const curs = curLabels();
-        const newLabels = new addon.ClWrap(curs, ...kvs);
-        return als.run(newLabels, f);
+
+    makeNamedContext = function (keys) {
+        if (!Array.isArray(keys)) {
+            throw new TypeError('keys must be an array of attribute names');
+        }
+        if (keys.length > 256) {
+            throw new RangeError('keys array exceeds 256 entries');
+        }
+        const indexByName = new Map();
+        keys.forEach((name, i) => {
+            if (typeof name !== 'string') {
+                throw new TypeError('every key must be a string');
+            }
+            if (indexByName.has(name)) {
+                throw new Error(`duplicate key name at indexes ${indexByName.get(name)} and ${i}: ${name}`);
+            }
+            indexByName.set(name, i);
+        });
+
+        return function withNamedContext(fn, opts) {
+            if (!opts || typeof opts !== 'object') {
+                throw new TypeError('withNamedContext requires an options object');
+            }
+
+            let attributes;
+            const named = opts.namedAttributes;
+            if (named != null) {
+                attributes = [];
+                const push = (name, value) => {
+                    const idx = indexByName.get(name);
+                    if (idx === undefined) {
+                        throw new Error(`unknown attribute name: ${name}`);
+                    }
+                    attributes.push([idx, String(value)]);
+                };
+                if (Array.isArray(named)) {
+                    for (const [n, v] of named) push(n, v);
+                } else if (named instanceof Map) {
+                    for (const [n, v] of named) push(n, v);
+                } else if (typeof named === 'object') {
+                    for (const n of Object.keys(named)) push(n, named[n]);
+                } else {
+                    throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
+                }
+            }
+
+            return withContext(fn, {
+                traceId: opts.traceId,
+                spanId: opts.spanId,
+                localRootSpanId: opts.localRootSpanId,
+                attributes,
+            });
+        };
+    };
+    // Debug accessor (not part of the stable API; for tests / reader dev):
+    // returns a Uint8Array view of the currently attached record, or undefined.
+    exports._currentRecordBytes = function () {
+        if (!als) return undefined;
+        const wrap = als.getStore();
+        if (!wrap) return undefined;
+        return wrap.bytes();
     };
 } else {
-    withLabels = function(f, ...kvs) {
-        return f();
+    withContext = function (fn, _opts) { return fn(); };
+    makeNamedContext = function (_keys) {
+        return function withNamedContext(fn, _opts) { return fn(); };
     };
-
-    curLabels = function() { return undefined; };
+    exports._currentRecordBytes = function () { return undefined; };
 }
 
-exports.withLabels = withLabels;
-exports.curLabels = curLabels;
+exports.withContext = withContext;
+exports.makeNamedContext = makeNamedContext;
