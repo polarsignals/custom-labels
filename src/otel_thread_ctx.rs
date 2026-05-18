@@ -75,8 +75,9 @@ mod linux {
     extern "C" {
         /// Return the address of the current thread's `otel_thread_ctx_v1` local.
         ///
-        /// **CAUTION**: do not use this directly, always go through [get_tls_slot] to read and
-        /// write it atomically.
+        /// This exposes the raw TLS cell. It must only be used by [get_tls_slot], which
+        /// immediately wraps it in an [`AtomicPtr`]. Direct non-atomic reads or writes would
+        /// conflict with the async signal handler that reads the slot concurrently.
         fn otel_get_thread_ctx_v1() -> *mut *mut c_void;
     }
 
@@ -86,7 +87,7 @@ mod linux {
     /// to this function.
     ///
     /// The slot is read by an async signal handler. Atomic operations should in general use
-    /// [Odering::Relaxed], but modifications to the record might need additional compiler-only
+    /// [Ordering::Relaxed], but modifications to the record might need additional compiler-only
     /// fences (see [ThreadContext::update] for an example).
     fn get_tls_slot<'a>() -> &'a AtomicPtr<ThreadContextRecord> {
         const {
@@ -96,11 +97,13 @@ mod linux {
             )
         }
 
-        // Safety: the const assertion above ensures the alignment is correct. The TLS slot is
-        // valid for writes during the lifetime of the program.
+        // SAFETY: the C shim returns the address of this thread's TLS pointer cell, which remains
+        // live while the thread is running. The const assertion above ensures that the cell is
+        // sufficiently aligned to be viewed as an `AtomicPtr<ThreadContextRecord>`.
         //
-        // We forbid direct usage of `otel_get_thread_ctx_v1`, which guarantees
-        // that there's never conflicting non-atomic accesses to the TLS slot.
+        // The async signal handler may read this slot while the thread is otherwise executing, so
+        // all accesses must go through this atomic view. Keeping `otel_get_thread_ctx_v1` private
+        // to this wrapper prevents conflicting non-atomic accesses to the same memory.
         unsafe {
             AtomicPtr::from_ptr(otel_get_thread_ctx_v1().cast::<*mut ThreadContextRecord>())
         }
