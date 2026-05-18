@@ -15,6 +15,6 @@ __attribute__((visibility("default")))
 __thread void *otel_thread_ctx_v1 = NULL;
 
 // Return the resolved address of the thread-local variable.
-void **libdd_get_otel_thread_ctx_v1(void) {
+void **otel_get_thread_ctx_v1(void) {
     return &otel_thread_ctx_v1;
 }

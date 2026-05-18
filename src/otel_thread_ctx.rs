@@ -3,7 +3,8 @@
 
 //! # Thread-level context sharing
 //!
-//! This module implements the publisher side of the Thread Context OTEP (PR #4947).
+//! This module implements the publisher side of the Thread Context OTEP
+//! (see [open-telemetry/opentelemetry-specification#4947](https://github.com/open-telemetry/opentelemetry-specification/pull/4947)).
 //!
 //! Since `rustc` doesn't currently support the TLSDESC dialect, we use a C shim to set and get the
 //! thread-local storage used for the context.
@@ -15,11 +16,10 @@
 //! ### In-place update
 //!
 //! The simplest pattern, when applicable, is to attach one record and then mutate it in place.
-//! This avoid allocation in the hot path.
+//! This avoids allocation in the hot path.
 //!
-//! ```ignore
-//! #use libdd_library_config::otel_thread_ctx::linux::ThreadContext;
-//!
+//! ```
+//! # use otel_thread_ctx::otel_thread_ctx::ThreadContext;
 //! let trace_id = [0u8; 16];
 //! let span_id  = [1u8; 8];
 //!
@@ -32,12 +32,11 @@
 //! ### Swapping
 //!
 //! Swapping can be used when it's beneficial to pre-allocate or keep around a bunch of contexts to
-//! be saved and restored repeatedly. Could be the case with async-runtimes were several tasks
+//! be saved and restored repeatedly. Could be the case with async-runtimes where several tasks
 //! might run on the same thread, or even move from one thread to another, for example.
 //!
-//! ```ignore
-//! #use libdd_library_config::otel_thread_ctx::linux::ThreadContext;
-//!
+//! ```
+//! # use otel_thread_ctx::otel_thread_ctx::ThreadContext;
 //! let trace_id = [0u8; 16];
 //! let span_id  = [1u8; 8];
 //! let attrs: &[(u8, &str)] = &[(0, "GET"), (1, "/api/v1")];
@@ -78,7 +77,7 @@ mod linux {
         ///
         /// **CAUTION**: do not use this directly, always go through [get_tls_slot] to read and
         /// write it atomically.
-        fn libdd_get_otel_thread_ctx_v1() -> *mut *mut c_void;
+        fn otel_get_thread_ctx_v1() -> *mut *mut c_void;
     }
 
     /// Return an atomic view of the TLS slot. The address calculation requires a call to a C shim
@@ -100,10 +99,10 @@ mod linux {
         // Safety: the const assertion above ensures the alignment is correct. The TLS slot is
         // valid for writes during the lifetime of the program.
         //
-        // We forbid direct usage of `libdd_get_otel_thread_ctx_v1`, which guarantees
+        // We forbid direct usage of `otel_get_thread_ctx_v1`, which guarantees
         // that there's never conflicting non-atomic accesses to the TLS slot.
         unsafe {
-            AtomicPtr::from_ptr(libdd_get_otel_thread_ctx_v1().cast::<*mut ThreadContextRecord>())
+            AtomicPtr::from_ptr(otel_get_thread_ctx_v1().cast::<*mut ThreadContextRecord>())
         }
     }
 
@@ -205,13 +204,11 @@ mod linux {
 
             for &(key_index, val) in attributes {
                 let val_bytes = val.as_bytes();
-                let val_len = val_bytes.len();
-                let val_len = if val_len > 255 {
+                let val_len_u8 = u8::try_from(val_bytes.len()).unwrap_or_else(|_| {
                     fully_encoded = false;
-                    255
-                } else {
-                    val_len
-                };
+                    u8::MAX
+                });
+                let val_len = usize::from(val_len_u8);
                 let entry_size = 2 + val_len;
 
                 if offset + entry_size > MAX_ATTRS_DATA_SIZE {
@@ -220,8 +217,7 @@ mod linux {
                 }
 
                 self.attrs_data[offset] = key_index;
-                // `val_len <= 255` thanks to the `min()`
-                self.attrs_data[offset + 1] = val_len as u8;
+                self.attrs_data[offset + 1] = val_len_u8;
                 self.attrs_data[offset + 2..offset + 2 + val_len]
                     .copy_from_slice(&val_bytes[..val_len]);
                 offset += entry_size;
@@ -287,17 +283,17 @@ mod linux {
         /// Turn this thread context into a raw pointer to the underlying [ThreadContextRecord].
         /// The pointer must be reconstructed through [`Self::from_raw`] in order to be properly
         /// dropped, or the record will leak.
-        fn into_raw(self) -> *mut ThreadContextRecord {
+        fn leak(self) -> *mut ThreadContextRecord {
             let mdrop = mem::ManuallyDrop::new(self);
             mdrop.0.as_ptr()
         }
 
         /// Reconstruct a [ThreadContextRecord] from a raw pointer that is either `null` or comes
-        /// from [`Self::into_raw`]. Return `None` if `ptr` is null.
+        /// from [`Self::leak`]. Return `None` if `ptr` is null.
         ///
         /// # Safety
         ///
-        /// - `ptr` must be `null` or come from a prior call to [`Self::into_raw`].
+        /// - `ptr` must be `null` or come from a prior call to [`Self::leak`].
         /// - if `ptr` is aliased, accesses to through aliases must not be interleaved with method
         ///   calls on the returned [ThreadContextRecord]. More precisely, mutable references might
         ///   be reconstructed during those calls, so any constraint from either Stacked Borrows,
@@ -344,7 +340,7 @@ mod linux {
             // However, this thread (excluding the reader signal handler) is the only one to ever
             // _write_ to the context, so the store we load the value from automatically
             // happens-before (because it's sequenced-before) the swap.
-            Self::swap(get_tls_slot(), self.into_raw())
+            Self::swap(get_tls_slot(), self.leak())
         }
 
         /// Mutate the currently attached record in-place with proper synchronization.
@@ -352,6 +348,11 @@ mod linux {
         /// fences to prevent reordering. Returns `false` if no record is attached.
         fn mutate_in_place(f: impl FnOnce(&mut ThreadContextRecord)) -> bool {
             let slot = get_tls_slot();
+            // SAFETY: when non-null, the slot holds a live `Box::into_raw` pointer that is
+            // only freed by `ThreadContext::drop` after detach. This thread is the sole writer
+            // and sole source of `&mut` to the record; the reader runs from a signal handler
+            // that stops this thread and touches the record only through raw pointers, so no
+            // aliasing reference can exist.
             if let Some(current) = unsafe { slot.load(Ordering::Relaxed).as_mut() } {
                 current.valid.store(0, Ordering::Relaxed);
                 compiler_fence(Ordering::SeqCst);
@@ -381,7 +382,7 @@ mod linux {
                 // `ThreadContext::new` already initialises `valid = 1`.
                 let _ = Self::swap(
                     get_tls_slot(),
-                    ThreadContext::new(trace_id, span_id, attrs).into_raw(),
+                    ThreadContext::new(trace_id, span_id, attrs).leak(),
                 );
             }
         }
