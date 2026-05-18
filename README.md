@@ -1,5 +1,14 @@
+# custom-labels / otel-thread-ctx
+
 > [!WARNING]
-> This library is experimental; both the API and ABI are subject to change as the underlying OTEPs are finalised.
+> This repository is experimental; both the API and ABI are subject to change as the underlying OTEPs are finalised.
+
+This repository contains two Rust crates:
+
+- [`otel-thread-ctx`](./otel-thread-ctx): the core OpenTelemetry thread/process context publisher.
+- [`custom-labels`](./custom-labels): a compatibility shim for the original `custom-labels` Rust API, implemented on top of `otel-thread-ctx`.
+
+New integrations should prefer `otel-thread-ctx` directly. Existing Rust users of the custom-labels adapter can depend on the `custom-labels` crate to keep using `with_label` and `with_labels` while publishing data through the newer OpenTelemetry context mechanism.
 
 ## Description
 

@@ -13,7 +13,10 @@ fn main() {
         build.flag("-mtls-dialect=gnu2");
 
         build.file("src/tls_shim.c").compile("tls_shim");
-        println!("cargo:rustc-link-arg=-Wl,--dynamic-list=./dlist");
+
+        let dlist_path = format!("{}/dlist", std::env::var("OUT_DIR").unwrap());
+        std::fs::write(&dlist_path, include_str!("dlist")).unwrap();
+        println!("cargo:rustc-link-arg=-Wl,--dynamic-list={}", dlist_path);
     }
 
     // Compile protobuf definitions

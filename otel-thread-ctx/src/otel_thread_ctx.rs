@@ -72,7 +72,6 @@ mod linux {
         sync::atomic::{compiler_fence, AtomicPtr, AtomicU8, Ordering},
     };
 
-
     /// Return an atomic view of the TLS slot. The address calculation requires a call to a C shim
     /// in order to use the TLSDESC dialect from Rust. The returned address is stable (per thread),
     /// so the resulting atomic should be reused whenever possible, to reduce the number of calls
@@ -101,9 +100,7 @@ mod linux {
         // The async signal handler may read this slot while the thread is otherwise executing, so
         // all accesses must go through this atomic view. Keeping `otel_get_thread_ctx_v1` private
         // to this wrapper prevents conflicting non-atomic accesses to the same memory.
-        unsafe {
-            AtomicPtr::from_ptr(otel_get_thread_ctx_v1().cast::<*mut ThreadContextRecord>())
-        }
+        unsafe { AtomicPtr::from_ptr(otel_get_thread_ctx_v1().cast::<*mut ThreadContextRecord>()) }
     }
 
     /// Maximum size in bytes of the `attrs_data` field.

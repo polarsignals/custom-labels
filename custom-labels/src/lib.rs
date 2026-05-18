@@ -13,7 +13,7 @@ use std::{
     sync::{LazyLock, RwLock},
 };
 
-use crate::{
+use otel_thread_ctx::{
     opentelemetry::proto::{
         common::v1::{any_value, AnyValue, ArrayValue, KeyValue},
         processcontext::v1development::ProcessContext,
@@ -21,6 +21,14 @@ use crate::{
     },
     otel_thread_ctx::ThreadContext,
 };
+
+/// Utilities for build scripts.
+pub mod build {
+    /// Emit the instructions required for an executable to expose custom labels data.
+    pub fn emit_build_instructions() {
+        otel_thread_ctx::build::emit_build_instructions();
+    }
+}
 
 /// Global key registry: key name -> thread context key index.
 /// Only grows; indices are never reused.
@@ -90,7 +98,7 @@ fn key_index(key: &str) -> u8 {
         ],
     };
     drop(map);
-    let _ = crate::otel_process_ctx::publish(&ctx);
+    let _ = otel_thread_ctx::otel_process_ctx::publish(&ctx);
 
     idx
 }
@@ -178,7 +186,7 @@ mod tests {
         sync::atomic::{fence, AtomicU64, Ordering},
     };
 
-    use crate::opentelemetry::proto::{
+    use otel_thread_ctx::opentelemetry::proto::{
         common::v1::any_value, processcontext::v1development::ProcessContext,
     };
 
@@ -282,6 +290,6 @@ mod tests {
                 assert_eq!(key_map, vec!["fruit", "veggie"]);
             });
         });
-        let _ = crate::otel_process_ctx::unpublish();
+        let _ = otel_thread_ctx::otel_process_ctx::unpublish();
     }
 }

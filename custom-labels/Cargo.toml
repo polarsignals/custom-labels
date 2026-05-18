@@ -1,0 +1,21 @@
+[package]
+name = "custom-labels"
+version = "0.4.7"
+edition = "2021"
+license = "Apache-2.0"
+keywords = ["profiling", "pprof", "polarsignals", "parca"]
+description = "Compatibility shim for the original custom-labels API, backed by otel-thread-ctx"
+homepage = "https://polarsignals.com"
+repository = "https://github.com/polarsignals/custom-labels"
+readme = "README.md"
+
+[dependencies]
+otel-thread-ctx = { version = "0.1.0", path = "../otel-thread-ctx" }
+
+[build-dependencies]
+otel-thread-ctx = { version = "0.1.0", path = "../otel-thread-ctx" }
+
+[dev-dependencies]
+prost = "0.14"
+rand = "0.10"
+serial_test = "3.4"

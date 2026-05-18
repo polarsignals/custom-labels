@@ -34,7 +34,6 @@ pub mod opentelemetry {
     }
 }
 
-pub mod custom_labels_adapter;
 pub mod otel_process_ctx;
 pub mod otel_thread_ctx;
 
