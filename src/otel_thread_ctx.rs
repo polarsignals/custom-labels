@@ -72,14 +72,6 @@ mod linux {
         sync::atomic::{compiler_fence, AtomicPtr, AtomicU8, Ordering},
     };
 
-    extern "C" {
-        /// Return the address of the current thread's `otel_thread_ctx_v1` local.
-        ///
-        /// This exposes the raw TLS cell. It must only be used by [get_tls_slot], which
-        /// immediately wraps it in an [`AtomicPtr`]. Direct non-atomic reads or writes would
-        /// conflict with the async signal handler that reads the slot concurrently.
-        fn otel_get_thread_ctx_v1() -> *mut *mut c_void;
-    }
 
     /// Return an atomic view of the TLS slot. The address calculation requires a call to a C shim
     /// in order to use the TLSDESC dialect from Rust. The returned address is stable (per thread),
@@ -90,6 +82,11 @@ mod linux {
     /// [Ordering::Relaxed], but modifications to the record might need additional compiler-only
     /// fences (see [ThreadContext::update] for an example).
     fn get_tls_slot<'a>() -> &'a AtomicPtr<ThreadContextRecord> {
+        extern "C" {
+            /// Return the address of the current thread's `otel_thread_ctx_v1` TLS cell.
+            fn otel_get_thread_ctx_v1() -> *mut *mut c_void;
+        }
+
         const {
             assert!(
                 mem::align_of::<AtomicPtr<ThreadContextRecord>>()
@@ -187,14 +184,14 @@ mod linux {
             record
         }
 
-        /// Encode `attributes` into `record.attrs_data` as packed key-value records. Existing data
-        /// are overridden (and if there were more entires than `attributes.len()`, they aren't
+        /// Encode `attributes` into `self.attrs_data` as packed key-value records. Existing data
+        /// are overridden (and if there were more entries than `attributes.len()`, they aren't
         /// zeroed, but they will be ignored by readers).
         ///
         /// # Return
         ///
-        /// Returns `true` if all attributes were properly encoded, or `false` if some of the data
-        /// needed to be dropped. See Size limits below.
+        /// Returns `true` if all attributes were fully encoded, or `false` if any value was
+        /// capped or any attribute was omitted because the fixed-size buffer filled up.
         ///
         /// # Arguments
         ///
@@ -202,12 +199,11 @@ mod linux {
         ///
         /// # Size limits
         ///
-        /// Any value over 255 bytes will be capped at this size. If the total size of the encoded
-        /// attributes is over [MAX_ATTRS_DATA_SIZE], extra attributes are ignored. We do this
-        /// instead of raising an error because we encode the attributes on-the-fly. Proper error
-        /// recovery would require us to be able to rollback to the previous attributes which would
-        /// hurt the happy path, or leave the record in a inconsistent state. Another possibility
-        /// would be to error out and reset the record in that situation.
+        /// Encoding is best-effort: any value over 255 bytes is capped at this size, and any
+        /// attribute that would make the encoded data exceed [MAX_ATTRS_DATA_SIZE] is omitted.
+        /// We avoid failing early because this function writes directly into the existing record;
+        /// failing mid-way would require rolling back the previous contents or clearing the record
+        /// first.
         fn set_attrs(&mut self, attributes: &[(u8, &str)]) -> bool {
             let mut fully_encoded = true;
             let mut offset = 0;
