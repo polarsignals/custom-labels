@@ -72,15 +72,18 @@ mod linux {
         sync::atomic::{compiler_fence, AtomicPtr, AtomicU8, Ordering},
     };
 
-    /// Return an atomic view of the TLS slot. The address calculation requires a call to a C shim
-    /// in order to use the TLSDESC dialect from Rust. The returned address is stable (per thread),
-    /// so the resulting atomic should be reused whenever possible, to reduce the number of calls
-    /// to this function.
+    /// Run `f` with an atomic view of the TLS slot. The address calculation requires a call to a C
+    /// shim in order to use the TLSDESC dialect from Rust. The returned address is stable per
+    /// thread, but the closure-based API prevents callers from leaking the reference beyond the
+    /// current access.
     ///
     /// The slot is read by an async signal handler. Atomic operations should in general use
     /// [Ordering::Relaxed], but modifications to the record might need additional compiler-only
     /// fences (see [ThreadContext::update] for an example).
-    fn get_tls_slot<'a>() -> &'a AtomicPtr<ThreadContextRecord> {
+    fn with_tls_slot<F, R>(f: F) -> R
+    where
+        F: for<'a> FnOnce(&'a AtomicPtr<ThreadContextRecord>) -> R,
+    {
         extern "C" {
             /// Return the address of the current thread's `otel_thread_ctx_v1` TLS cell.
             fn otel_get_thread_ctx_v1() -> *mut *mut c_void;
@@ -100,7 +103,9 @@ mod linux {
         // The async signal handler may read this slot while the thread is otherwise executing, so
         // all accesses must go through this atomic view. Keeping `otel_get_thread_ctx_v1` private
         // to this wrapper prevents conflicting non-atomic accesses to the same memory.
-        unsafe { AtomicPtr::from_ptr(otel_get_thread_ctx_v1().cast::<*mut ThreadContextRecord>()) }
+        f(unsafe {
+            AtomicPtr::from_ptr(otel_get_thread_ctx_v1().cast::<*mut ThreadContextRecord>())
+        })
     }
 
     /// Maximum size in bytes of the `attrs_data` field.
@@ -343,31 +348,32 @@ mod linux {
             // However, this thread (excluding the reader signal handler) is the only one to ever
             // _write_ to the context, so the store we load the value from automatically
             // happens-before (because it's sequenced-before) the swap.
-            Self::swap(get_tls_slot(), self.leak())
+            with_tls_slot(|slot| Self::swap(slot, self.leak()))
         }
 
         /// Mutate the currently attached record in-place with proper synchronization.
         /// Sets `valid = 0` before calling `f`, and `valid = 1` after, with compiler
         /// fences to prevent reordering. Returns `false` if no record is attached.
         fn mutate_in_place(f: impl FnOnce(&mut ThreadContextRecord)) -> bool {
-            let slot = get_tls_slot();
-            // SAFETY: when non-null, the slot holds a live `Box::into_raw` pointer that is
-            // only freed by `ThreadContext::drop` after detach. This thread is the sole writer
-            // and sole source of `&mut` to the record; the reader runs from a signal handler
-            // that stops this thread and touches the record only through raw pointers, so no
-            // aliasing reference can exist.
-            if let Some(current) = unsafe { slot.load(Ordering::Relaxed).as_mut() } {
-                current.valid.store(0, Ordering::Relaxed);
-                compiler_fence(Ordering::SeqCst);
+            with_tls_slot(|slot| {
+                // SAFETY: when non-null, the slot holds a live `Box::into_raw` pointer that is
+                // only freed by `ThreadContext::drop` after detach. This thread is the sole writer
+                // and sole source of `&mut` to the record; the reader runs from a signal handler
+                // that stops this thread and touches the record only through raw pointers, so no
+                // aliasing reference can exist.
+                if let Some(current) = unsafe { slot.load(Ordering::Relaxed).as_mut() } {
+                    current.valid.store(0, Ordering::Relaxed);
+                    compiler_fence(Ordering::SeqCst);
 
-                f(current);
+                    f(current);
 
-                compiler_fence(Ordering::SeqCst);
-                current.valid.store(1, Ordering::Relaxed);
-                true
-            } else {
-                false
-            }
+                    compiler_fence(Ordering::SeqCst);
+                    current.valid.store(1, Ordering::Relaxed);
+                    true
+                } else {
+                    false
+                }
+            })
         }
 
         /// Update the currently attached record in-place.
@@ -383,10 +389,9 @@ mod linux {
                 // No need for `AcqRel`, see [^tls-slot-ordering].
                 compiler_fence(Ordering::Release);
                 // `ThreadContext::new` already initialises `valid = 1`.
-                let _ = Self::swap(
-                    get_tls_slot(),
-                    ThreadContext::new(trace_id, span_id, attrs).leak(),
-                );
+                let _ = with_tls_slot(|slot| {
+                    Self::swap(slot, ThreadContext::new(trace_id, span_id, attrs).leak())
+                });
             }
         }
 
@@ -402,7 +407,7 @@ mod linux {
         /// detached record.
         pub fn detach() -> Option<ThreadContext> {
             // We don't need any fence here, see [^tls-slot-ordering].
-            Self::swap(get_tls_slot(), ptr::null_mut())
+            with_tls_slot(|slot| Self::swap(slot, ptr::null_mut()))
         }
     }
 
@@ -425,7 +430,7 @@ mod linux {
         /// Read the TLS pointer for the current thread (the value stored in the TLS slot, not the
         /// address of the slot itself).
         fn read_tls_context_ptr() -> *const ThreadContextRecord {
-            super::get_tls_slot().load(Ordering::Relaxed)
+            super::with_tls_slot(|slot| slot.load(Ordering::Relaxed))
         }
 
         #[test]
