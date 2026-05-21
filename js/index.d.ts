@@ -9,8 +9,7 @@
  * absent (array holes) are skipped. Non-string values are coerced via
  * `toString`. Values longer than 255 UTF-8 bytes are silently truncated and
  * attributes that would overflow the 612-byte payload budget are silently
- * dropped, matching the reference Rust implementation. Array length must not
- * exceed 256.
+ * dropped. Array length must not exceed 256.
  */
 export interface ContextOptions {
     traceId: Uint8Array;

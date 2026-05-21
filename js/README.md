@@ -167,9 +167,9 @@ process context).
 * This component does not explicitly coordinate with OTEP-4719 process-context
   for either reading or updating the association of numeric key indices to their
   names.
-* Matching the `libdd-otel-thread-ctx` semantics, we're currently not merging
-  attribute sets in nested `withContext` invocations, a new record completely
-  replaces the previous record for the duration of the nested invocation.
+* We're not merging attribute sets in nested `withContext` invocations, a new
+  record completely replaces the previous record for the duration of the nested
+  invocation.
 
 ## Development
 

@@ -62,8 +62,8 @@ using v8::Uint8Array;
 using v8::Value;
 
 // Maximum size of the variable-length attribute payload. Chosen so the total
-// record size is exactly 640 bytes, matching libdd-otel-thread-ctx and staying
-// within the OTEP-recommended 640-byte limit for eBPF readers.
+// record size is exactly 640 bytes, staying within the OTEP-recommended
+// 640-byte limit for eBPF readers.
 constexpr size_t MAX_ATTRS_DATA_SIZE = 612;
 
 // Exact OTEP-4947 layout. Total: 28-byte header + 612-byte attrs payload.
@@ -187,7 +187,7 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
       size_t needed = 2u + (size_t)v_len;
       if (attrs_offset + needed > MAX_ATTRS_DATA_SIZE) {
         // Total attribute payload would overflow the 612-byte budget; drop
-        // this and any remaining attributes, matching libdd-otel-thread-ctx.
+        // this and any remaining attributes.
         break;
       }
       record->attrs_data[attrs_offset] = (uint8_t)i;
