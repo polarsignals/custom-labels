@@ -163,13 +163,10 @@ The writer publishes three things the reader needs to find:
 2. A JavaScript wrapper object (class name `CtxWrap`) stored as the value
    for the ALS instance key inside the current `AsyncContextFrame` (itself
    the V8 isolate's `ContinuationPreservedEmbedderData`). The wrapper is a
-   `node::ObjectWrap` subclass; its first two fields after the base
-   subobject are:
+   `node::ObjectWrap` subclass with a single non-inherited field:
 
-   - `uint64_t token_` — equal to `0xC7E1B57E54B5A2D1`. Acts as homemade
-     RTTI: if the bytes at this offset match the constant, the reader is
-     looking at a `CtxWrap`.
-   - `OtelThreadCtxRecord *record_` — pointer to the 640-byte record.
+   - `OtelThreadCtxRecord *record_` — pointer to the 640-byte record,
+     placed immediately after the `node::ObjectWrap` base subobject.
 
 3. The record itself is exactly the OTEP-4947 layout: `trace_id[16]`,
    `span_id[8]`, `valid` (always 1, set during construction), `reserved`,

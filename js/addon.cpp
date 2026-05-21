@@ -88,19 +88,13 @@ static_assert(offsetof(OtelThreadCtxRecord, attrs_data_size) == 26,
 static_assert(offsetof(OtelThreadCtxRecord, attrs_data) == 28,
               "attrs_data offset");
 
-// RTTI marker the out-of-process reader uses to recognize a CtxWrap. New value
-// distinct from the legacy custom-labels CLWRAP_TOKEN_VALUE so stale readers
-// don't misinterpret a record laid out per the OTEP-4947 format.
-constexpr uint64_t CTXWRAP_TOKEN_VALUE = 0xC7E1B57E54B5A2D1ull;
-
 // Wraps a heap-allocated OtelThreadCtxRecord. Lifetime is managed by V8 GC:
 // when no JS code (or AsyncLocalStorage entry) holds a reference, the record
 // is freed.
 //
-// Layout note for the reader: `token_` and `record_` are non-private only
-// conceptually (they are private to C++) but their byte positions within
-// CtxWrap are part of the reader contract. They are the first two fields
-// after the node::ObjectWrap base subobject. Keep them in this order.
+// Layout note for the reader: `record_` is private to C++ but its byte
+// position within CtxWrap is part of the reader contract. It is the first
+// field after the node::ObjectWrap base subobject.
 class CtxWrap : public ObjectWrap {
  public:
   ~CtxWrap() override;
@@ -115,7 +109,6 @@ class CtxWrap : public ObjectWrap {
   static void New(const FunctionCallbackInfo<Value> &args);
   static void Bytes(const FunctionCallbackInfo<Value> &args);
 
-  uint64_t token_;
   OtelThreadCtxRecord *record_;
 
   explicit CtxWrap(OtelThreadCtxRecord *record);
@@ -123,8 +116,7 @@ class CtxWrap : public ObjectWrap {
 
 CtxWrap::~CtxWrap() { delete record_; }
 
-CtxWrap::CtxWrap(OtelThreadCtxRecord *record)
-    : token_(CTXWRAP_TOKEN_VALUE), record_(record) {}
+CtxWrap::CtxWrap(OtelThreadCtxRecord *record) : record_(record) {}
 
 static bool HexNibble(uint8_t c, uint8_t *out) {
   if (c >= '0' && c <= '9') {
@@ -315,7 +307,7 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
 void CtxWrap::Bytes(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
   CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
-  if (!self || self->token_ != CTXWRAP_TOKEN_VALUE) {
+  if (!self) {
     isolate->ThrowError("not a CtxWrap");
     return;
   }
