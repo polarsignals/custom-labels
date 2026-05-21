@@ -4,15 +4,18 @@
  * `traceId` and `spanId` are passed as raw bytes (a `Uint8Array` of length 16
  * and 8 respectively; `Buffer` is acceptable as a subclass).
  *
- * Attribute values are coerced to strings; values longer than 255 UTF-8 bytes
- * are silently truncated and attributes that would overflow the 612-byte
- * payload budget are silently dropped, matching the reference Rust
- * implementation.
+ * `attributes`, if present, is positional: index N in the array is the value
+ * for uint8 key index N on the wire. Slots that are `null`, `undefined`, or
+ * absent (array holes) are skipped. Non-string values are coerced via
+ * `toString`. Values longer than 255 UTF-8 bytes are silently truncated and
+ * attributes that would overflow the 612-byte payload budget are silently
+ * dropped, matching the reference Rust implementation. Array length must not
+ * exceed 256.
  */
 export interface ContextOptions {
     traceId: Uint8Array;
     spanId: Uint8Array;
-    attributes?: Array<[number, string]>;
+    attributes?: Array<string | null | undefined>;
 }
 
 /**

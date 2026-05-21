@@ -34,12 +34,12 @@ withContext(
     {
         traceId: Buffer.from('4bf92f3577b34da6a3ce929d0e0e4736', 'hex'),
         spanId:  Buffer.from('00f067aa0ba902b7', 'hex'),
-        // Attributes are keyed by uint8 index, mapping to the names published
-        // in the process-wide `threadlocal.attribute_key_map` (OTEP-4719).
-        attributes: [
-            [1, 'GET'],
-            [2, '/api/v1/widgets'],
-        ],
+        // attributes is positional: index N here = uint8 key index N in the
+        // wire record. Slots set to null/undefined or array holes are skipped.
+        // Key names come from threadlocal.attribute_key_map (OTEP-4719) — for
+        // this example, names at indexes 0 and 1 would be e.g. "http.method"
+        // and "http.route".
+        attributes: ['GET', '/api/v1/widgets'],
     },
 );
 ```
@@ -79,10 +79,12 @@ Executes the callback function with the specified OTEP-4947 thread-context recor
 - `opts`:
   - `traceId` — 16 raw bytes (`Uint8Array`; `Buffer` works as a subclass).
   - `spanId` — 8 raw bytes (`Uint8Array`; `Buffer` works as a subclass).
-  - `attributes` (optional) — `Array<[number, string]>` of (key index, value)
-    pairs. Each value is coerced to a string. Values longer than 255 UTF-8 bytes
-    are silently truncated; attributes whose encoding would overflow the
-    612-byte payload budget are silently dropped.
+  - `attributes` (optional) — positional `Array<string | null | undefined>`:
+    index N is the value for uint8 key index N on the wire. Slots that are
+    `null`, `undefined`, or array holes are skipped. Non-string values are
+    coerced via `toString`. Values longer than 255 UTF-8 bytes are silently
+    truncated; attributes that would overflow the 612-byte payload budget are
+    silently dropped. Array length must not exceed 256.
 
 **Synchronous callback:**
 ```javascript
@@ -94,10 +96,7 @@ withContext(
     {
         traceId: Buffer.from('4bf92f3577b34da6a3ce929d0e0e4736', 'hex'),
         spanId:  Buffer.from('00f067aa0ba902b7', 'hex'),
-        attributes: [
-            [1, 'GET'],
-            [2, '/api/v1/widgets'],
-        ],
+        attributes: ['GET', '/api/v1/widgets'],
     },
 );
 ```
@@ -112,10 +111,7 @@ await withContext(
     {
         traceId: Buffer.from('4bf92f3577b34da6a3ce929d0e0e4736', 'hex'),
         spanId:  Buffer.from('00f067aa0ba902b7', 'hex'),
-        attributes: [
-            [1, 'GET'],
-            [2, '/api/v1/widgets'],
-        ],
+        attributes: ['GET', '/api/v1/widgets'],
     },
 );
 ```

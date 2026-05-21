@@ -51,7 +51,6 @@ using v8::Function;
 using v8::FunctionCallbackInfo;
 using v8::FunctionTemplate;
 using v8::Global;
-using v8::Int32;
 using v8::Integer;
 using v8::Isolate;
 using v8::Local;
@@ -162,43 +161,20 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   if (!args[2]->IsUndefined() && !args[2]->IsNull()) {
     if (!args[2]->IsArray()) {
       isolate->ThrowError(
-          "attributes must be an array of [keyIndex, value] pairs or "
-          "undefined");
+          "attributes must be an array indexed by key, or undefined");
       return;
     }
     Local<Array> attrs = args[2].As<Array>();
     uint32_t n = attrs->Length();
+    if (n > 256) {
+      isolate->ThrowError("attributes array length must not exceed 256");
+      return;
+    }
     for (uint32_t i = 0; i < n; ++i) {
-      Local<Value> pair_val;
-      if (!attrs->Get(context, i).ToLocal(&pair_val)) return;
-      if (!pair_val->IsArray()) {
-        isolate->ThrowError(
-            "each attribute must be a [keyIndex, value] pair");
-        return;
-      }
-      Local<Array> pair = pair_val.As<Array>();
-      if (pair->Length() != 2) {
-        isolate->ThrowError(
-            "each attribute must be a [keyIndex, value] pair");
-        return;
-      }
-
-      Local<Value> key_val, val_val;
-      if (!pair->Get(context, 0).ToLocal(&key_val)) return;
-      if (!pair->Get(context, 1).ToLocal(&val_val)) return;
-
-      if (!key_val->IsInt32()) {
-        isolate->ThrowError(
-            "attribute keyIndex must be an integer in [0, 255]");
-        return;
-      }
-      int32_t k = key_val.As<Int32>()->Value();
-      if (k < 0 || k > 255) {
-        isolate->ThrowError(
-            "attribute keyIndex must be an integer in [0, 255]");
-        return;
-      }
-      uint8_t key_idx = (uint8_t)k;
+      Local<Value> val_val;
+      if (!attrs->Get(context, i).ToLocal(&val_val)) return;
+      // null / undefined / array holes mean "no value at this key index".
+      if (val_val->IsUndefined() || val_val->IsNull()) continue;
 
       Local<String> v;
       if (!val_val->ToString(context).ToLocal(&v)) {
@@ -214,7 +190,7 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
         // this and any remaining attributes, matching libdd-otel-thread-ctx.
         break;
       }
-      record->attrs_data[attrs_offset] = key_idx;
+      record->attrs_data[attrs_offset] = (uint8_t)i;
       record->attrs_data[attrs_offset + 1] = v_len;
       v->WriteUtf8(isolate,
                    reinterpret_cast<char *>(&record->attrs_data[attrs_offset + 2]),

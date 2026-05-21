@@ -77,19 +77,19 @@ if (process.platform === 'linux') {
             const named = opts.namedAttributes;
             if (named != null) {
                 attributes = [];
-                const push = (name, value) => {
+                const set = (name, value) => {
                     const idx = indexByName.get(name);
                     if (idx === undefined) {
                         throw new Error(`unknown attribute name: ${name}`);
                     }
-                    attributes.push([idx, String(value)]);
+                    attributes[idx] = String(value);
                 };
                 if (Array.isArray(named)) {
-                    for (const [n, v] of named) push(n, v);
+                    for (const [n, v] of named) set(n, v);
                 } else if (named instanceof Map) {
-                    for (const [n, v] of named) push(n, v);
+                    for (const [n, v] of named) set(n, v);
                 } else if (typeof named === 'object') {
-                    for (const n of Object.keys(named)) push(n, named[n]);
+                    for (const n of Object.keys(named)) set(n, named[n]);
                 } else {
                     throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
                 }

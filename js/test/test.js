@@ -31,16 +31,18 @@ function decodeHeader(bytes) {
     };
 }
 
+// Returns the attribute payload as a positional sparse array, mirroring the
+// writer's input shape: index N is the value for uint8 key index N on the
+// wire; unset slots are array holes.
 function decodeAttrs(bytes) {
     const hdr = decodeHeader(bytes);
     const out = [];
     let i = 28;
-    const end = 28 + hdr.attrsDataSize;
+    const end = i + hdr.attrsDataSize;
     while (i < end) {
         const idx = bytes[i++];
         const len = bytes[i++];
-        const val = Buffer.from(bytes.slice(i, i + len)).toString('utf8');
-        out.push([idx, val]);
+        out[idx] = Buffer.from(bytes.slice(i, i + len)).toString('utf8');
         i += len;
     }
     assert.equal(i, end, 'attrs payload must be exactly attrsDataSize bytes');
@@ -93,34 +95,43 @@ test('no attributes leaves attrs_data empty', () => {
     assert.equal(decodeHeader(bytes).attrsDataSize, 0);
 });
 
-test('attributes encoded in order', () => {
+test('attributes are encoded by position', () => {
     const bytes = captureBytes({
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
-        attributes: [[1, 'GET'], [2, '/api/v1/widgets']],
+        attributes: ['GET', '/api/v1/widgets'],
     });
-    assert.deepEqual(decodeAttrs(bytes), [
-        [1, 'GET'],
-        [2, '/api/v1/widgets'],
-    ]);
+    assert.deepEqual(decodeAttrs(bytes), ['GET', '/api/v1/widgets']);
 });
 
-test('attribute key index 0 is allowed', () => {
+test('null and undefined slots are skipped', () => {
     const bytes = captureBytes({
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
-        attributes: [[0, 'whatever']],
+        attributes: ['zero', null, undefined, 'three'],
     });
-    assert.deepEqual(decodeAttrs(bytes), [[0, 'whatever']]);
+    assert.deepEqual(decodeAttrs(bytes), ['zero', , , 'three']);
+});
+
+test('trailing array holes are skipped', () => {
+    // Sparse assignment: index 5 set, lower indexes are holes.
+    const attributes = [];
+    attributes[5] = 'five';
+    const bytes = captureBytes({
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes,
+    });
+    assert.deepEqual(decodeAttrs(bytes), [, , , , , 'five']);
 });
 
 test('attributes coerce non-string values via toString', () => {
     const bytes = captureBytes({
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
-        attributes: [[1, 42], [2, true]],
+        attributes: [42, true],
     });
-    assert.deepEqual(decodeAttrs(bytes), [[1, '42'], [2, 'true']]);
+    assert.deepEqual(decodeAttrs(bytes), ['42', 'true']);
 });
 
 test('value longer than 255 bytes is truncated to 255', () => {
@@ -128,12 +139,9 @@ test('value longer than 255 bytes is truncated to 255', () => {
     const bytes = captureBytes({
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
-        attributes: [[1, long]],
+        attributes: [long],
     });
-    const decoded = decodeAttrs(bytes);
-    assert.equal(decoded.length, 1);
-    assert.equal(decoded[0][1].length, 255);
-    assert.equal(decoded[0][1], 'x'.repeat(255));
+    assert.deepEqual(decodeAttrs(bytes), ['x'.repeat(255)]);
 });
 
 test('attrs that would exceed the 612-byte payload are dropped at the boundary', () => {
@@ -145,23 +153,19 @@ test('attrs that would exceed the 612-byte payload are dropped at the boundary',
     const bytes = captureBytes({
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
-        attributes: [[1, a], [2, b], [3, c]],
+        attributes: [a, b, c],
     });
-    const decoded = decodeAttrs(bytes);
-    assert.equal(decoded.length, 2);
-    assert.deepEqual(decoded[0], [1, a]);
-    assert.deepEqual(decoded[1], [2, b]);
+    assert.deepEqual(decodeAttrs(bytes), [a, b]);
     assert.equal(decodeHeader(bytes).attrsDataSize, 514);
 });
 
-test('keyIndex out of [0,255] is rejected', () => {
-    for (const bad of [-1, 256, 1000, 1.5]) {
-        assert.throws(() => captureBytes({
-            traceId: TRACE_ID_BYTES,
-            spanId:  SPAN_ID_BYTES,
-            attributes: [[bad, 'v']],
-        }), /keyIndex must be an integer in \[0, 255\]/, `bad=${bad}`);
-    }
+test('attributes array longer than 256 is rejected', () => {
+    const tooLong = new Array(257);
+    assert.throws(() => captureBytes({
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: tooLong,
+    }), /must not exceed 256/);
 });
 
 test('non-array attributes argument is rejected', () => {
@@ -170,19 +174,6 @@ test('non-array attributes argument is rejected', () => {
         spanId:  SPAN_ID_BYTES,
         attributes: { not: 'an array' },
     }), /attributes must be an array/);
-});
-
-test('malformed attribute pair is rejected', () => {
-    assert.throws(() => captureBytes({
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: [[1]],
-    }), /\[keyIndex, value\] pair/);
-    assert.throws(() => captureBytes({
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: ['not-a-pair'],
-    }), /\[keyIndex, value\] pair/);
 });
 
 test('withContext returns fn result', () => {
@@ -267,40 +258,40 @@ test('makeNamedContext rejects non-string entries', () => {
 });
 
 test('namedAttributes (object form) resolves to indices', () => {
-    const withNamed = makeNamedContext(['root', 'http.method', 'http.route']);
+    const withNamed = makeNamedContext(['http.method', 'http.route']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: { 'http.method': 'GET', 'http.route': '/x' },
     });
-    assert.deepEqual(decodeAttrs(bytes), [[1, 'GET'], [2, '/x']]);
+    assert.deepEqual(decodeAttrs(bytes), ['GET', '/x']);
 });
 
 test('namedAttributes (Map form) resolves to indices', () => {
-    const withNamed = makeNamedContext(['root', 'a', 'b']);
+    const withNamed = makeNamedContext(['a', 'b']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: new Map([['a', 'A'], ['b', 'B']]),
     });
-    assert.deepEqual(decodeAttrs(bytes), [[1, 'A'], [2, 'B']]);
+    assert.deepEqual(decodeAttrs(bytes), ['A', 'B']);
 });
 
 test('namedAttributes (array form) resolves to indices', () => {
-    const withNamed = makeNamedContext(['root', 'a', 'b']);
+    const withNamed = makeNamedContext(['a', 'b']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: [['a', 'A'], ['b', 'B']],
     });
-    assert.deepEqual(decodeAttrs(bytes), [[1, 'A'], [2, 'B']]);
+    assert.deepEqual(decodeAttrs(bytes), ['A', 'B']);
 });
 
 test('unknown name in namedAttributes is rejected', () => {
-    const withNamed = makeNamedContext(['root', 'a']);
+    const withNamed = makeNamedContext(['a']);
     assert.throws(() => withNamed(() => {}, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
@@ -309,13 +300,13 @@ test('unknown name in namedAttributes is rejected', () => {
 });
 
 test('namedAttributes coerces non-string values', () => {
-    const withNamed = makeNamedContext(['root', 'n']);
+    const withNamed = makeNamedContext(['n']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: { n: 7 },
     });
-    assert.deepEqual(decodeAttrs(bytes), [[1, '7']]);
+    assert.deepEqual(decodeAttrs(bytes), ['7']);
 });
 
