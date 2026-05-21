@@ -291,17 +291,17 @@ mod linux {
         /// Turn this thread context into a raw pointer to the underlying [ThreadContextRecord].
         /// The pointer must be reconstructed through [`Self::from_raw`] in order to be properly
         /// dropped, or the record will leak.
-        fn leak(self) -> *mut ThreadContextRecord {
+        fn into_raw(self) -> *mut ThreadContextRecord {
             let mdrop = mem::ManuallyDrop::new(self);
             mdrop.0.as_ptr()
         }
 
         /// Reconstruct a [ThreadContextRecord] from a raw pointer that is either `null` or comes
-        /// from [`Self::leak`]. Return `None` if `ptr` is null.
+        /// from [`Self::into_raw`]. Return `None` if `ptr` is null.
         ///
         /// # Safety
         ///
-        /// - `ptr` must be `null` or come from a prior call to [`Self::leak`].
+        /// - `ptr` must be `null` or come from a prior call to [`Self::into_raw`].
         /// - if `ptr` is aliased, accesses to through aliases must not be interleaved with method
         ///   calls on the returned [ThreadContextRecord]. More precisely, mutable references might
         ///   be reconstructed during those calls, so any constraint from either Stacked Borrows,
@@ -348,7 +348,7 @@ mod linux {
             // However, this thread (excluding the reader signal handler) is the only one to ever
             // _write_ to the context, so the store we load the value from automatically
             // happens-before (because it's sequenced-before) the swap.
-            with_tls_slot(|slot| Self::swap(slot, self.leak()))
+            with_tls_slot(|slot| Self::swap(slot, self.into_raw()))
         }
 
         /// Mutate the currently attached record in-place with proper synchronization.
@@ -386,12 +386,14 @@ mod linux {
                 record.span_id = span_id;
                 record.set_attrs(attrs);
             }) {
+                // Allocate and initialise the record *before* the fence, so that the
+                // writes performed by `ThreadContext::new` (in particular `valid = 1`) cannot
+                // be reordered past the store to the TLS slot below.
+                let ptr = ThreadContext::new(trace_id, span_id, attrs).into_raw();
                 // No need for `AcqRel`, see [^tls-slot-ordering].
                 compiler_fence(Ordering::Release);
                 // `ThreadContext::new` already initialises `valid = 1`.
-                let _ = with_tls_slot(|slot| {
-                    Self::swap(slot, ThreadContext::new(trace_id, span_id, attrs).leak())
-                });
+                let _ = with_tls_slot(|slot| Self::swap(slot, ptr));
             }
         }
 
