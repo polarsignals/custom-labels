@@ -1,19 +1,12 @@
 /**
- * A trace_id (16 bytes), span_id (8 bytes), or local_root_span_id (8 bytes)
- * accepted by this library. Either a Uint8Array of exactly the expected
- * length, or a lowercase/uppercase hex string of exactly twice the expected
- * length.
+ * A trace_id (16 bytes) or span_id (8 bytes) accepted by this library.
+ * Either a Uint8Array of exactly the expected length, or a
+ * lowercase/uppercase hex string of exactly twice the expected length.
  */
 export type FixedBytes = Uint8Array | string;
 
 /**
  * Inputs to {@link withContext}.
- *
- * The trace context (trace ID, span ID) is required. `localRootSpanId`, when
- * provided, is encoded as the very first attribute (key index 0) as a
- * 16-character lowercase hex string, matching the libdd-otel-thread-ctx
- * convention. When `localRootSpanId` is set, an attribute with key index 0
- * MUST NOT also be provided in `attributes`.
  *
  * Attribute values are coerced to strings; values longer than 255 UTF-8 bytes
  * are silently truncated and attributes that would overflow the 612-byte
@@ -23,7 +16,6 @@ export type FixedBytes = Uint8Array | string;
 export interface ContextOptions {
     traceId: FixedBytes;
     spanId: FixedBytes;
-    localRootSpanId?: FixedBytes;
     attributes?: Array<[number, string]>;
 }
 
@@ -36,7 +28,6 @@ export interface ContextOptions {
 export interface NamedContextOptions {
     traceId: FixedBytes;
     spanId: FixedBytes;
-    localRootSpanId?: FixedBytes;
     namedAttributes?:
         | Record<string, unknown>
         | Map<string, unknown>

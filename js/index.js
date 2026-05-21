@@ -45,7 +45,6 @@ if (process.platform === 'linux') {
         const wrap = new addon.CtxWrap(
             opts.traceId,
             opts.spanId,
-            opts.localRootSpanId,
             opts.attributes,
         );
         return als.run(wrap, fn);
@@ -99,7 +98,6 @@ if (process.platform === 'linux') {
             return withContext(fn, {
                 traceId: opts.traceId,
                 spanId: opts.spanId,
-                localRootSpanId: opts.localRootSpanId,
                 attributes,
             });
         };

@@ -13,11 +13,9 @@ const { withContext, makeNamedContext, _currentRecordBytes } = lib;
 
 const TRACE_ID_HEX = '0102030405060708090a0b0c0d0e0f10';
 const SPAN_ID_HEX  = '1112131415161718';
-const ROOT_ID_HEX  = '2122232425262728';
 
 const TRACE_ID_BYTES = bytesFromHex(TRACE_ID_HEX);
 const SPAN_ID_BYTES  = bytesFromHex(SPAN_ID_HEX);
-const ROOT_ID_BYTES  = bytesFromHex(ROOT_ID_HEX);
 
 function bytesFromHex(hex) {
     const out = new Uint8Array(hex.length / 2);
@@ -125,48 +123,24 @@ test('non-hex characters in hex string are rejected', () => {
         /traceId must be/);
 });
 
-test('localRootSpanId omitted leaves attrs_data empty', () => {
+test('no attributes leaves attrs_data empty', () => {
     const bytes = captureBytes({ traceId: TRACE_ID_HEX, spanId: SPAN_ID_HEX });
     assert.equal(decodeHeader(bytes).attrsDataSize, 0);
 });
 
-test('localRootSpanId encodes as 16-char lowercase hex at key index 0', () => {
+test('attributes encoded in order', () => {
     const bytes = captureBytes({
         traceId: TRACE_ID_HEX,
         spanId:  SPAN_ID_HEX,
-        localRootSpanId: ROOT_ID_BYTES,
-    });
-    const attrs = decodeAttrs(bytes);
-    assert.equal(attrs.length, 1);
-    assert.deepEqual(attrs[0], [0, ROOT_ID_HEX]);
-    // attrs_data_size == 2 (header) + 16 (hex value) = 18.
-    assert.equal(decodeHeader(bytes).attrsDataSize, 18);
-});
-
-test('localRootSpanId from hex string is normalized to lowercase', () => {
-    const bytes = captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
-        localRootSpanId: ROOT_ID_HEX.toUpperCase(),
-    });
-    assert.deepEqual(decodeAttrs(bytes)[0], [0, ROOT_ID_HEX]);
-});
-
-test('attributes encoded after the root-span entry', () => {
-    const bytes = captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
-        localRootSpanId: ROOT_ID_BYTES,
         attributes: [[1, 'GET'], [2, '/api/v1/widgets']],
     });
     assert.deepEqual(decodeAttrs(bytes), [
-        [0, ROOT_ID_HEX],
         [1, 'GET'],
         [2, '/api/v1/widgets'],
     ]);
 });
 
-test('attributes without localRootSpanId may use index 0', () => {
+test('attribute key index 0 is allowed', () => {
     const bytes = captureBytes({
         traceId: TRACE_ID_HEX,
         spanId:  SPAN_ID_HEX,
@@ -213,15 +187,6 @@ test('attrs that would exceed the 612-byte payload are dropped at the boundary',
     assert.deepEqual(decoded[0], [1, a]);
     assert.deepEqual(decoded[1], [2, b]);
     assert.equal(decodeHeader(bytes).attrsDataSize, 514);
-});
-
-test('keyIndex 0 with localRootSpanId is rejected', () => {
-    assert.throws(() => captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
-        localRootSpanId: ROOT_ID_BYTES,
-        attributes: [[0, 'collision']],
-    }), /keyIndex 0 is reserved/);
 });
 
 test('keyIndex out of [0,255] is rejected', () => {
@@ -389,13 +354,3 @@ test('namedAttributes coerces non-string values', () => {
     assert.deepEqual(decodeAttrs(bytes), [[1, '7']]);
 });
 
-test('makeNamedContext returned function passes through localRootSpanId', () => {
-    const withNamed = makeNamedContext(['local_root_span_id']);
-    let bytes;
-    withNamed(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
-        localRootSpanId: ROOT_ID_BYTES,
-    });
-    assert.deepEqual(decodeAttrs(bytes), [[0, ROOT_ID_HEX]]);
-});

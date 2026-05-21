@@ -167,16 +167,6 @@ static bool ParseFixedBytes(Isolate *isolate, Local<Value> value,
   return false;
 }
 
-// Convert an 8-byte raw span ID to a 16-character lowercase hex string,
-// written into `out` (which must have room for 16 bytes).
-static void EncodeSpanIdHex(const uint8_t span_id[8], uint8_t out[16]) {
-  static const char HEX[] = "0123456789abcdef";
-  for (size_t i = 0; i < 8; ++i) {
-    out[i * 2] = (uint8_t)HEX[span_id[i] >> 4];
-    out[i * 2 + 1] = (uint8_t)HEX[span_id[i] & 0xF];
-  }
-}
-
 void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
@@ -185,10 +175,9 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
     isolate->ThrowError("CtxWrap must be called with `new`");
     return;
   }
-  if (args.Length() != 4) {
+  if (args.Length() != 3) {
     isolate->ThrowError(
-        "CtxWrap expects 4 arguments: traceId, spanId, localRootSpanId, "
-        "attributes");
+        "CtxWrap expects 3 arguments: traceId, spanId, attributes");
     return;
   }
 
@@ -208,30 +197,14 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   }
 
   size_t attrs_offset = 0;
-  const bool has_root_span = !args[2]->IsUndefined() && !args[2]->IsNull();
-  if (has_root_span) {
-    uint8_t root_span[8];
-    if (!ParseFixedBytes(isolate, args[2], 8, root_span)) {
-      isolate->ThrowError(
-          "localRootSpanId must be an 8-byte Uint8Array or a 16-char hex "
-          "string");
-      return;
-    }
-    // Index 0 entry: key_index=0, val_len=16, val=<16 lowercase hex chars>.
-    record->attrs_data[0] = 0;
-    record->attrs_data[1] = 16;
-    EncodeSpanIdHex(root_span, &record->attrs_data[2]);
-    attrs_offset = 18;
-  }
-
-  if (!args[3]->IsUndefined() && !args[3]->IsNull()) {
-    if (!args[3]->IsArray()) {
+  if (!args[2]->IsUndefined() && !args[2]->IsNull()) {
+    if (!args[2]->IsArray()) {
       isolate->ThrowError(
           "attributes must be an array of [keyIndex, value] pairs or "
           "undefined");
       return;
     }
-    Local<Array> attrs = args[3].As<Array>();
+    Local<Array> attrs = args[2].As<Array>();
     uint32_t n = attrs->Length();
     for (uint32_t i = 0; i < n; ++i) {
       Local<Value> pair_val;
@@ -264,12 +237,6 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
         return;
       }
       uint8_t key_idx = (uint8_t)k;
-      if (has_root_span && key_idx == 0) {
-        isolate->ThrowError(
-            "attribute keyIndex 0 is reserved when localRootSpanId is "
-            "provided");
-        return;
-      }
 
       Local<String> v;
       if (!val_val->ToString(context).ToLocal(&v)) {

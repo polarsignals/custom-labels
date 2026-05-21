@@ -34,7 +34,6 @@ withContext(
     {
         traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
         spanId:  '00f067aa0ba902b7',
-        localRootSpanId: '00f067aa0ba902b7',
         // Attributes are keyed by uint8 index, mapping to the names published
         // in the process-wide `threadlocal.attribute_key_map` (OTEP-4719).
         attributes: [
@@ -51,9 +50,8 @@ sugar API:
 
 ```javascript
 const keys = [
-    'local_root_span_id', // index 0 — reserved; set via `localRootSpanId`
-    'http.method',        // index 1
-    'http.route',         // index 2
+    'http.method', // index 0
+    'http.route',  // index 1
 ];
 const withNamedContext = makeNamedContext(keys);
 
@@ -62,7 +60,6 @@ withNamedContext(
     {
         traceId:  '4bf92f3577b34da6a3ce929d0e0e4736',
         spanId:   '00f067aa0ba902b7',
-        localRootSpanId: '00f067aa0ba902b7',
         namedAttributes: {
             'http.method': 'GET',
             'http.route':  '/api/v1/widgets',
@@ -82,16 +79,10 @@ Executes the callback function with the specified OTEP-4947 thread-context recor
 - `opts`:
   - `traceId` — 16 raw bytes (`Uint8Array`) or a 32-char hex string.
   - `spanId` — 8 raw bytes (`Uint8Array`) or a 16-char hex string.
-  - `localRootSpanId` (optional) — 8 raw bytes or a 16-char hex string.
-    When set, it is encoded at key index 0 as a 16-char lowercase hex string,
-    matching the [libdd] convention.
   - `attributes` (optional) — `Array<[number, string]>` of (key index, value)
     pairs. Each value is coerced to a string. Values longer than 255 UTF-8 bytes
     are silently truncated; attributes whose encoding would overflow the
-    612-byte payload budget are silently dropped. Key index 0 may not be used
-    in `attributes` when `localRootSpanId` is provided.
-
-[libdd]: https://github.com/DataDog/libdatadog/tree/main/libdd-otel-thread-ctx
+    612-byte payload budget are silently dropped.
 
 **Synchronous callback:**
 ```javascript
@@ -103,7 +94,6 @@ withContext(
     {
         traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
         spanId:  '00f067aa0ba902b7',
-        localRootSpanId: '00f067aa0ba902b7',
         attributes: [
             [1, 'GET'],
             [2, '/api/v1/widgets'],
@@ -122,7 +112,6 @@ await withContext(
     {
         traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
         spanId:  '00f067aa0ba902b7',
-        localRootSpanId: '00f067aa0ba902b7',
         attributes: [
             [1, 'GET'],
             [2, '/api/v1/widgets'],
