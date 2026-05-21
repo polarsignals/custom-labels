@@ -1,12 +1,8 @@
 /**
- * A trace_id (16 bytes) or span_id (8 bytes) accepted by this library.
- * Either a Uint8Array of exactly the expected length, or a
- * lowercase/uppercase hex string of exactly twice the expected length.
- */
-export type FixedBytes = Uint8Array | string;
-
-/**
  * Inputs to {@link withContext}.
+ *
+ * `traceId` and `spanId` are passed as raw bytes (a `Uint8Array` of length 16
+ * and 8 respectively; `Buffer` is acceptable as a subclass).
  *
  * Attribute values are coerced to strings; values longer than 255 UTF-8 bytes
  * are silently truncated and attributes that would overflow the 612-byte
@@ -14,8 +10,8 @@ export type FixedBytes = Uint8Array | string;
  * implementation.
  */
 export interface ContextOptions {
-    traceId: FixedBytes;
-    spanId: FixedBytes;
+    traceId: Uint8Array;
+    spanId: Uint8Array;
     attributes?: Array<[number, string]>;
 }
 
@@ -26,8 +22,8 @@ export interface ContextOptions {
  * {@link makeNamedContext}.
  */
 export interface NamedContextOptions {
-    traceId: FixedBytes;
-    spanId: FixedBytes;
+    traceId: Uint8Array;
+    spanId: Uint8Array;
     namedAttributes?:
         | Record<string, unknown>
         | Map<string, unknown>

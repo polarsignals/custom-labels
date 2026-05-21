@@ -118,53 +118,17 @@ CtxWrap::~CtxWrap() { delete record_; }
 
 CtxWrap::CtxWrap(OtelThreadCtxRecord *record) : record_(record) {}
 
-static bool HexNibble(uint8_t c, uint8_t *out) {
-  if (c >= '0' && c <= '9') {
-    *out = (uint8_t)(c - '0');
-    return true;
-  }
-  if (c >= 'a' && c <= 'f') {
-    *out = (uint8_t)(c - 'a' + 10);
-    return true;
-  }
-  if (c >= 'A' && c <= 'F') {
-    *out = (uint8_t)(c - 'A' + 10);
-    return true;
-  }
-  return false;
-}
-
-// Parse `expected_bytes` raw bytes from a JS value. The value must be either a
-// Uint8Array of exactly `expected_bytes` bytes, or a hex string of exactly
-// `expected_bytes * 2` ASCII hex characters. Returns true on success.
-static bool ParseFixedBytes(Isolate *isolate, Local<Value> value,
-                            size_t expected_bytes, uint8_t *out) {
-  if (value->IsUint8Array()) {
-    Local<Uint8Array> arr = value.As<Uint8Array>();
-    if (arr->ByteLength() != expected_bytes) return false;
-    uint8_t *base = static_cast<uint8_t *>(arr->Buffer()->Data()) +
-                    arr->ByteOffset();
-    memcpy(out, base, expected_bytes);
-    return true;
-  }
-  if (value->IsString()) {
-    Local<String> s = value.As<String>();
-    int utf8_len = s->Utf8Length(isolate);
-    if ((size_t)utf8_len != expected_bytes * 2) return false;
-    std::unique_ptr<char[]> buf(new char[utf8_len]);
-    s->WriteUtf8(isolate, buf.get(), utf8_len, nullptr,
-                 String::NO_NULL_TERMINATION);
-    for (size_t i = 0; i < expected_bytes; ++i) {
-      uint8_t hi, lo;
-      if (!HexNibble((uint8_t)buf[i * 2], &hi) ||
-          !HexNibble((uint8_t)buf[i * 2 + 1], &lo)) {
-        return false;
-      }
-      out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return true;
-  }
-  return false;
+// Copy exactly `expected_bytes` bytes out of a JS Uint8Array (or subclass such
+// as Buffer) into `out`. Returns false if the value isn't a Uint8Array or its
+// length doesn't match.
+static bool CopyBytes(Local<Value> value, size_t expected_bytes, uint8_t *out) {
+  if (!value->IsUint8Array()) return false;
+  Local<Uint8Array> arr = value.As<Uint8Array>();
+  if (arr->ByteLength() != expected_bytes) return false;
+  uint8_t *base = static_cast<uint8_t *>(arr->Buffer()->Data()) +
+                  arr->ByteOffset();
+  memcpy(out, base, expected_bytes);
+  return true;
 }
 
 void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
@@ -185,14 +149,12 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   std::unique_ptr<OtelThreadCtxRecord> record(new OtelThreadCtxRecord{});
   record->valid = 1;
 
-  if (!ParseFixedBytes(isolate, args[0], 16, record->trace_id)) {
-    isolate->ThrowError(
-        "traceId must be a 16-byte Uint8Array or a 32-char hex string");
+  if (!CopyBytes(args[0], 16, record->trace_id)) {
+    isolate->ThrowError("traceId must be a 16-byte Uint8Array");
     return;
   }
-  if (!ParseFixedBytes(isolate, args[1], 8, record->span_id)) {
-    isolate->ThrowError(
-        "spanId must be an 8-byte Uint8Array or a 16-char hex string");
+  if (!CopyBytes(args[1], 8, record->span_id)) {
+    isolate->ThrowError("spanId must be an 8-byte Uint8Array");
     return;
   }
 

@@ -11,18 +11,13 @@ if (process.platform !== 'linux') {
 const lib = require('..');
 const { withContext, makeNamedContext, _currentRecordBytes } = lib;
 
-const TRACE_ID_HEX = '0102030405060708090a0b0c0d0e0f10';
-const SPAN_ID_HEX  = '1112131415161718';
+const TRACE_ID_BYTES = bytesFromHex('0102030405060708090a0b0c0d0e0f10');
+const SPAN_ID_BYTES  = bytesFromHex('1112131415161718');
 
-const TRACE_ID_BYTES = bytesFromHex(TRACE_ID_HEX);
-const SPAN_ID_BYTES  = bytesFromHex(SPAN_ID_HEX);
-
+// Returns a plain Uint8Array (not a Buffer) so assert.deepStrictEqual against
+// other Uint8Arrays — including the one the addon returns — succeeds.
 function bytesFromHex(hex) {
-    const out = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < out.length; i++) {
-        out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    }
-    return out;
+    return Uint8Array.from(Buffer.from(hex, 'hex'));
 }
 
 function decodeHeader(bytes) {
@@ -58,21 +53,14 @@ function captureBytes(opts) {
     return bytes;
 }
 
-test('traceId/spanId accepted as hex strings', () => {
-    const bytes = captureBytes({ traceId: TRACE_ID_HEX, spanId: SPAN_ID_HEX });
+test('traceId/spanId accepted as Uint8Array', () => {
+    const bytes = captureBytes({ traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
     const hdr = decodeHeader(bytes);
     assert.deepEqual(hdr.traceId, TRACE_ID_BYTES);
     assert.deepEqual(hdr.spanId, SPAN_ID_BYTES);
     assert.equal(hdr.valid, 1);
     assert.equal(hdr.reserved, 0);
     assert.equal(hdr.attrsDataSize, 0);
-});
-
-test('traceId/spanId accepted as Uint8Array', () => {
-    const bytes = captureBytes({ traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
-    const hdr = decodeHeader(bytes);
-    assert.deepEqual(hdr.traceId, TRACE_ID_BYTES);
-    assert.deepEqual(hdr.spanId, SPAN_ID_BYTES);
 });
 
 test('traceId/spanId accepted as Buffer (Uint8Array subclass)', () => {
@@ -85,53 +73,30 @@ test('traceId/spanId accepted as Buffer (Uint8Array subclass)', () => {
     assert.deepEqual(hdr.spanId, SPAN_ID_BYTES);
 });
 
-test('mixed hex and Uint8Array inputs work', () => {
-    const bytes = captureBytes({ traceId: TRACE_ID_HEX, spanId: SPAN_ID_BYTES });
-    const hdr = decodeHeader(bytes);
-    assert.deepEqual(hdr.traceId, TRACE_ID_BYTES);
-    assert.deepEqual(hdr.spanId, SPAN_ID_BYTES);
-});
-
-test('uppercase hex is accepted', () => {
-    const bytes = captureBytes({
-        traceId: TRACE_ID_HEX.toUpperCase(),
-        spanId: SPAN_ID_HEX.toUpperCase(),
-    });
-    const hdr = decodeHeader(bytes);
-    assert.deepEqual(hdr.traceId, TRACE_ID_BYTES);
-    assert.deepEqual(hdr.spanId, SPAN_ID_BYTES);
-});
-
-test('traceId wrong length (hex) is rejected', () => {
-    assert.throws(() => captureBytes({ traceId: '00', spanId: SPAN_ID_HEX }),
+test('traceId wrong length is rejected', () => {
+    assert.throws(() => captureBytes({ traceId: new Uint8Array(8), spanId: SPAN_ID_BYTES }),
         /traceId must be/);
 });
 
-test('traceId wrong length (Uint8Array) is rejected', () => {
-    assert.throws(() => captureBytes({ traceId: new Uint8Array(8), spanId: SPAN_ID_HEX }),
-        /traceId must be/);
-});
-
-test('spanId wrong length (hex) is rejected', () => {
-    assert.throws(() => captureBytes({ traceId: TRACE_ID_HEX, spanId: '00' }),
+test('spanId wrong length is rejected', () => {
+    assert.throws(() => captureBytes({ traceId: TRACE_ID_BYTES, spanId: new Uint8Array(4) }),
         /spanId must be/);
 });
 
-test('non-hex characters in hex string are rejected', () => {
-    const bad = 'g'.repeat(32);
-    assert.throws(() => captureBytes({ traceId: bad, spanId: SPAN_ID_HEX }),
+test('non-Uint8Array traceId is rejected', () => {
+    assert.throws(() => captureBytes({ traceId: 'a'.repeat(32), spanId: SPAN_ID_BYTES }),
         /traceId must be/);
 });
 
 test('no attributes leaves attrs_data empty', () => {
-    const bytes = captureBytes({ traceId: TRACE_ID_HEX, spanId: SPAN_ID_HEX });
+    const bytes = captureBytes({ traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
     assert.equal(decodeHeader(bytes).attrsDataSize, 0);
 });
 
 test('attributes encoded in order', () => {
     const bytes = captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: [[1, 'GET'], [2, '/api/v1/widgets']],
     });
     assert.deepEqual(decodeAttrs(bytes), [
@@ -142,8 +107,8 @@ test('attributes encoded in order', () => {
 
 test('attribute key index 0 is allowed', () => {
     const bytes = captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: [[0, 'whatever']],
     });
     assert.deepEqual(decodeAttrs(bytes), [[0, 'whatever']]);
@@ -151,8 +116,8 @@ test('attribute key index 0 is allowed', () => {
 
 test('attributes coerce non-string values via toString', () => {
     const bytes = captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: [[1, 42], [2, true]],
     });
     assert.deepEqual(decodeAttrs(bytes), [[1, '42'], [2, 'true']]);
@@ -161,8 +126,8 @@ test('attributes coerce non-string values via toString', () => {
 test('value longer than 255 bytes is truncated to 255', () => {
     const long = 'x'.repeat(300);
     const bytes = captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: [[1, long]],
     });
     const decoded = decodeAttrs(bytes);
@@ -178,8 +143,8 @@ test('attrs that would exceed the 612-byte payload are dropped at the boundary',
     const b = 'b'.repeat(255);
     const c = 'c'.repeat(100);
     const bytes = captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: [[1, a], [2, b], [3, c]],
     });
     const decoded = decodeAttrs(bytes);
@@ -192,8 +157,8 @@ test('attrs that would exceed the 612-byte payload are dropped at the boundary',
 test('keyIndex out of [0,255] is rejected', () => {
     for (const bad of [-1, 256, 1000, 1.5]) {
         assert.throws(() => captureBytes({
-            traceId: TRACE_ID_HEX,
-            spanId:  SPAN_ID_HEX,
+            traceId: TRACE_ID_BYTES,
+            spanId:  SPAN_ID_BYTES,
             attributes: [[bad, 'v']],
         }), /keyIndex must be an integer in \[0, 255\]/, `bad=${bad}`);
     }
@@ -201,27 +166,27 @@ test('keyIndex out of [0,255] is rejected', () => {
 
 test('non-array attributes argument is rejected', () => {
     assert.throws(() => captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: { not: 'an array' },
     }), /attributes must be an array/);
 });
 
 test('malformed attribute pair is rejected', () => {
     assert.throws(() => captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: [[1]],
     }), /\[keyIndex, value\] pair/);
     assert.throws(() => captureBytes({
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         attributes: ['not-a-pair'],
     }), /\[keyIndex, value\] pair/);
 });
 
 test('withContext returns fn result', () => {
-    const result = withContext(() => 'ok', { traceId: TRACE_ID_HEX, spanId: SPAN_ID_HEX });
+    const result = withContext(() => 'ok', { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
     assert.equal(result, 'ok');
 });
 
@@ -230,20 +195,20 @@ test('outside withContext, no active record', () => {
 });
 
 test('after withContext returns, no active record', () => {
-    withContext(() => {}, { traceId: TRACE_ID_HEX, spanId: SPAN_ID_HEX });
+    withContext(() => {}, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
     assert.equal(_currentRecordBytes(), undefined);
 });
 
 test('nested withContext restores parent context after inner returns', () => {
-    const outerOpts = { traceId: TRACE_ID_HEX, spanId: SPAN_ID_HEX };
-    const innerSpan = 'aabbccddeeff0011';
-    const innerOpts = { traceId: TRACE_ID_HEX, spanId: innerSpan };
+    const outerOpts = { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES };
+    const innerSpanBytes = bytesFromHex('aabbccddeeff0011');
+    const innerOpts = { traceId: TRACE_ID_BYTES, spanId: innerSpanBytes };
 
     withContext(() => {
         const outerBefore = decodeHeader(_currentRecordBytes()).spanId;
         withContext(() => {
             const inner = decodeHeader(_currentRecordBytes()).spanId;
-            assert.deepEqual(inner, bytesFromHex(innerSpan));
+            assert.deepEqual(inner, innerSpanBytes);
         }, innerOpts);
         const outerAfter = decodeHeader(_currentRecordBytes()).spanId;
         assert.deepEqual(outerBefore, outerAfter);
@@ -261,14 +226,14 @@ test('async work inside withContext sees same record after awaits', async () => 
         assert.deepEqual(before, SPAN_ID_BYTES);
         assert.deepEqual(afterMicro, SPAN_ID_BYTES);
         assert.deepEqual(afterMacro, SPAN_ID_BYTES);
-    }, { traceId: TRACE_ID_HEX, spanId: SPAN_ID_HEX });
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
 });
 
 test('concurrent async withContext calls keep contexts isolated', async () => {
-    const aSpan = '1111111111111111';
-    const bSpan = '2222222222222222';
+    const aSpan = bytesFromHex('1111111111111111');
+    const bSpan = bytesFromHex('2222222222222222');
 
-    async function run(spanHex) {
+    async function run(spanBytes) {
         return withContext(async () => {
             const observed = [];
             for (let i = 0; i < 4; i++) {
@@ -276,12 +241,12 @@ test('concurrent async withContext calls keep contexts isolated', async () => {
                 await Promise.resolve();
             }
             return observed;
-        }, { traceId: TRACE_ID_HEX, spanId: spanHex });
+        }, { traceId: TRACE_ID_BYTES, spanId: spanBytes });
     }
 
     const [aObs, bObs] = await Promise.all([run(aSpan), run(bSpan)]);
-    for (const s of aObs) assert.deepEqual(s, bytesFromHex(aSpan));
-    for (const s of bObs) assert.deepEqual(s, bytesFromHex(bSpan));
+    for (const s of aObs) assert.deepEqual(s, aSpan);
+    for (const s of bObs) assert.deepEqual(s, bSpan);
 });
 
 test('makeNamedContext rejects non-array keys', () => {
@@ -305,8 +270,8 @@ test('namedAttributes (object form) resolves to indices', () => {
     const withNamed = makeNamedContext(['root', 'http.method', 'http.route']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         namedAttributes: { 'http.method': 'GET', 'http.route': '/x' },
     });
     assert.deepEqual(decodeAttrs(bytes), [[1, 'GET'], [2, '/x']]);
@@ -316,8 +281,8 @@ test('namedAttributes (Map form) resolves to indices', () => {
     const withNamed = makeNamedContext(['root', 'a', 'b']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         namedAttributes: new Map([['a', 'A'], ['b', 'B']]),
     });
     assert.deepEqual(decodeAttrs(bytes), [[1, 'A'], [2, 'B']]);
@@ -327,8 +292,8 @@ test('namedAttributes (array form) resolves to indices', () => {
     const withNamed = makeNamedContext(['root', 'a', 'b']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         namedAttributes: [['a', 'A'], ['b', 'B']],
     });
     assert.deepEqual(decodeAttrs(bytes), [[1, 'A'], [2, 'B']]);
@@ -337,8 +302,8 @@ test('namedAttributes (array form) resolves to indices', () => {
 test('unknown name in namedAttributes is rejected', () => {
     const withNamed = makeNamedContext(['root', 'a']);
     assert.throws(() => withNamed(() => {}, {
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         namedAttributes: { unknown: 'v' },
     }), /unknown attribute name: unknown/);
 });
@@ -347,8 +312,8 @@ test('namedAttributes coerces non-string values', () => {
     const withNamed = makeNamedContext(['root', 'n']);
     let bytes;
     withNamed(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_HEX,
-        spanId:  SPAN_ID_HEX,
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
         namedAttributes: { n: 7 },
     });
     assert.deepEqual(decodeAttrs(bytes), [[1, '7']]);
