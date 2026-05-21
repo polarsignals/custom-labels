@@ -15,20 +15,33 @@
 
 #include <memory>
 
-// Symbols read from outside the process via TLSDESC. They identify, for the
-// current V8 isolate's thread, which AsyncLocalStorage instance the reader
-// must look up inside the AsyncContextFrame map, and its identity hash so the
-// reader can restrict the search to a single hash bucket.
+// Single thread-local read from outside the process via TLSDESC. It identifies,
+// for the current V8 isolate's thread, which AsyncLocalStorage instance the
+// reader must look up inside the AsyncContextFrame map. `als_identity_hash`
+// lets the reader restrict the search to a single hash bucket.
+//
+// Layout is part of the reader ABI: see the README "Discovery contract"
+// section and the static_asserts below.
 extern "C" {
 using v8::Global;
 using v8::Object;
 
-__attribute__((visibility("default")))
-thread_local int otel_thread_ctx_nodejs_v1_als_identity_hash;
+struct otel_thread_ctx_nodejs_v1_t {
+  Global<Object> als_handle;  // offset 0; one V8 internal pointer
+  int als_identity_hash;      // offset sizeof(void*); padding to 16 bytes total
+};
 
 __attribute__((visibility("default")))
-thread_local Global<Object> otel_thread_ctx_nodejs_v1_als_handle;
+thread_local otel_thread_ctx_nodejs_v1_t otel_thread_ctx_nodejs_v1;
 }
+
+static_assert(sizeof(v8::Global<v8::Object>) == sizeof(void *),
+              "Global<Object> must be exactly one pointer wide");
+static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_handle) == 0,
+              "als_handle must be at offset 0");
+static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_identity_hash) ==
+                  sizeof(void *),
+              "als_identity_hash must immediately follow als_handle");
 
 namespace otel_thread_ctx_nodejs {
 using node::ObjectWrap;
@@ -342,7 +355,7 @@ void CtxWrap::Init(Local<Object> exports) {
 // segfault. Registering this as a per-isolate cleanup hook the first time
 // StoreAls is called keeps the handle safely scoped to the isolate.
 static void ResetAlsHandle(void * /*arg*/) {
-  otel_thread_ctx_nodejs_v1_als_handle.Reset();
+  otel_thread_ctx_nodejs_v1.als_handle.Reset();
 }
 
 void StoreAls(const FunctionCallbackInfo<Value> &args) {
@@ -354,8 +367,8 @@ void StoreAls(const FunctionCallbackInfo<Value> &args) {
     return;
   }
   Local<Object> obj = args[0].As<Object>();
-  otel_thread_ctx_nodejs_v1_als_identity_hash = obj->GetIdentityHash();
-  otel_thread_ctx_nodejs_v1_als_handle = Global<Object>(isolate, obj);
+  otel_thread_ctx_nodejs_v1.als_identity_hash = obj->GetIdentityHash();
+  otel_thread_ctx_nodejs_v1.als_handle = Global<Object>(isolate, obj);
   if (!cleanup_registered) {
     node::AddEnvironmentCleanupHook(isolate, ResetAlsHandle, nullptr);
     cleanup_registered = true;
@@ -369,7 +382,7 @@ void StoreAls(const FunctionCallbackInfo<Value> &args) {
 void GetStoredAlsHash(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
   args.GetReturnValue().Set(
-      Integer::New(isolate, otel_thread_ctx_nodejs_v1_als_identity_hash));
+      Integer::New(isolate, otel_thread_ctx_nodejs_v1.als_identity_hash));
 }
 
 #pragma GCC diagnostic push

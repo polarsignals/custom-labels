@@ -148,14 +148,17 @@ is captured once at factory time.
 
 The writer publishes three things the reader needs to find:
 
-1. Two thread-local symbols in the addon shared library's `dynsym` table,
-   each emitted with the TLSDESC dialect:
+1. A single thread-local symbol `otel_thread_ctx_nodejs_v1` in the addon
+   shared library's `dynsym` table, emitted with the TLSDESC dialect. It
+   is a struct with the following layout:
 
-   - `otel_thread_ctx_nodejs_v1_als_handle` — a `v8::Global<v8::Object>`
-     referring to the `AsyncLocalStorage` instance the writer uses.
-   - `otel_thread_ctx_nodejs_v1_als_identity_hash` — its `int` identity
-     hash, useful for narrowing the search to a single hash bucket inside
-     the `AsyncContextFrame`'s map.
+   - offset `0`, size `sizeof(void *)` — `als_handle`, a
+     `v8::Global<v8::Object>` referring to the `AsyncLocalStorage`
+     instance the writer uses. Its underlying representation is a single
+     V8 internal pointer.
+   - offset `sizeof(void *)`, size `sizeof(int)` — `als_identity_hash`,
+     the JS identity hash of that ALS instance. Useful for narrowing the
+     search to a single hash bucket inside the `AsyncContextFrame`'s map.
 
 2. A JavaScript wrapper object (class name `CtxWrap`) stored as the value
    for the ALS instance key inside the current `AsyncContextFrame` (itself
