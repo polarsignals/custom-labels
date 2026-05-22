@@ -1,12 +1,15 @@
+//! Example using the original custom-labels API backed by OTel thread/process contexts.
+//! For new code, prefer using `otel-thread-ctx` directly.
+
 use std::time::{Duration, Instant};
 
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::RngExt;
 
 fn rand_str() -> String {
     String::from_utf8(
-        rand::thread_rng()
-            .sample_iter(&Alphanumeric)
+        rand::rng()
+            .sample_iter(Alphanumeric)
             .take(16)
             .collect::<Vec<_>>(),
     )

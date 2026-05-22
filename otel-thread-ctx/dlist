@@ -5,6 +5,5 @@
  * stripped.
  */
 {
-  custom_labels_abi_version;
-  custom_labels_current_set;
+  otel_thread_ctx_v1;
 };

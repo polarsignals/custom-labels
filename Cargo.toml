@@ -1,23 +1,11 @@
-[package]
-name = "custom-labels"
-version = "0.4.6"
+[workspace]
+members = ["otel-thread-ctx", "custom-labels"]
+resolver = "2"
+
+[workspace.package]
 edition = "2021"
 license = "Apache-2.0"
 keywords = ["profiling", "pprof", "polarsignals", "parca"]
-description = "Custom labels for profilers"
 homepage = "https://polarsignals.com"
 repository = "https://github.com/polarsignals/custom-labels"
 readme = "README.md"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[build-dependencies]
-bindgen = { version = "0.72", default-features = false, features = ["runtime"] }
-cc = "1.0"
-
-[dev-dependencies]
-rand = "0.8.5"
-
-[dependencies]
-libc = "0.2"
-pin-project-lite = "0.2"
