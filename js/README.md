@@ -174,6 +174,35 @@ The process-context schema version corresponding to this writer is
 process context, by whichever component the application uses to publish
 process context).
 
+A reader detecting this schema can find the current thread context record using
+an algorithm that encodes knowledge of the relevant objects in V8 working
+memory. It first needs to dereference the tagged pointer at `cped_slot`. (V8
+tagged pointers have their lowest bit set, it needs to be zeroed out for proper
+dereferencing.) That yields the address of the AsyncContextFrame object, which
+is a V8 JSMap. It will have a tagged pointer to its V8 OrderedHashMap at offset
+(3 * uintptr_t). Following it yields the said map, which is a subclass of V8
+FixedArray, a fixed-size array of uintptr_t slots. Its element 1 (not 0) encodes
+its own length as a V8 Smi (small integer; low 32 bits are zero, need to shift
+it right by 32 bits for the actual value.) Elements 2, 3, 4 encode the number of
+elements, number of deleted elements, and number of hash buckets. A naive
+implementation can at this point dereference `als_handle` (also a tagged
+pointer) to get the pointer to the ALS object and just scan the entire array,
+looking for the same value as a hashtable key. Once found, the next entry is its
+associated value, a JSObject that in its internal field 0 (at offset
+(3 * uintptr_t) from the JSObject, holding the raw native pointer directly since
+Node's bundled V8 has both pointer compression and the sandbox disabled) has a
+pointer to the native `CtxWrap` object, which has a `record_` field pointing
+to the actual thread context record. A more sophisticated implementation can use
+`als_identity_hash` to identify the particular hash bucket and limit scanning of
+the hashtable to only that bucket.
+
+The above algorithm works correctly for the fortunately unchanged layouts of all
+objects involved between Node.js versions 22 and 26.
+
+A reader should validate the record (at the very least confirm it has its
+`valid` field set to 1) to also ensure that this multi-step pointer chasing led
+to an actual record.
+
 ## Functionality not currently in scope
 
 * This component does not explicitly coordinate with OTEP-4719 process-context
