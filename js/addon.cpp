@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <atomic>
 #include <memory>
 
 // Single thread-local read from outside the process via TLSDESC. It identifies,
@@ -159,9 +160,9 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
     return;
   }
 
-  // Value-initialize so all bytes start at 0, then set valid=1.
+  // Value-initialize so all bytes start at 0. `valid` stays 0 until the
+  // final fenced+volatile store at the end of this function.
   std::unique_ptr<OtelThreadCtxRecord> record(new OtelThreadCtxRecord{});
-  record->valid = 1;
 
   if (!CopyBytes(args[0], 16, record->trace_id)) {
     isolate->ThrowError("traceId must be a 16-byte Uint8Array");
@@ -220,6 +221,19 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   }
 
   record->attrs_data_size = (uint16_t)attrs_offset;
+
+  // OTEP-4947 publication protocol: order the `valid = 1` store after every
+  // other field write, with an `atomic_signal_fence` to pin that ordering at
+  // compile time and a volatile store so the compiler can't fold or hoist
+  // the write. Our current design doesn't actually need this — the record
+  // is freshly allocated and only becomes visible to a reader via the V8
+  // hand-off below, which already establishes happens-before with all the
+  // field writes — but it matches the spec verbatim and is the protocol the
+  // alternative "fixed buffer, toggle valid" publication mode would require
+  // if we ever switch to it. Both the fence and the volatile store are
+  // zero-cost at runtime.
+  std::atomic_signal_fence(std::memory_order_release);
+  *reinterpret_cast<volatile uint8_t *>(&record->valid) = 1;
 
   CtxWrap *self = new CtxWrap(record.release());
   self->Wrap(args.This());
