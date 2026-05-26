@@ -1,4 +1,5 @@
-let withContext;
+let runWithContext;
+let enterWithContext;
 let makeNamedContext;
 
 if (process.platform === 'linux') {
@@ -25,7 +26,7 @@ if (process.platform === 'linux') {
         // Older versions: not available.
         return "Node major versions prior to v22 do not support the feature at all";
     }
-    
+
     function ensureHook() {
         if (als)
             return;
@@ -37,17 +38,26 @@ if (process.platform === 'linux') {
         addon.storeAls(als);
     }
 
-    withContext = function (fn, opts) {
+    function buildWrap(opts) {
         if (!opts || typeof opts !== 'object') {
-            throw new TypeError('withContext requires an options object');
+            throw new TypeError('options object required');
         }
         ensureHook();
-        const wrap = new addon.CtxWrap(
+        return new addon.CtxWrap(
             opts.traceId,
             opts.spanId,
             opts.attributes,
         );
+    }
+
+    runWithContext = function (fn, opts) {
+        const wrap = buildWrap(opts);
         return als.run(wrap, fn);
+    };
+
+    enterWithContext = function (opts) {
+        const wrap = buildWrap(opts);
+        als.enterWith(wrap);
     };
 
     makeNamedContext = function (keys) {
@@ -68,40 +78,49 @@ if (process.platform === 'linux') {
             indexByName.set(name, i);
         });
 
-        return function withNamedContext(fn, opts) {
-            if (!opts || typeof opts !== 'object') {
-                throw new TypeError('withNamedContext requires an options object');
-            }
-
-            let attributes;
-            const named = opts.namedAttributes;
-            if (named != null) {
-                attributes = [];
-                const set = (name, value) => {
-                    const idx = indexByName.get(name);
-                    if (idx === undefined) {
-                        throw new Error(`unknown attribute name: ${name}`);
-                    }
-                    attributes[idx] = String(value);
-                };
-                if (Array.isArray(named)) {
-                    for (const [n, v] of named) set(n, v);
-                } else if (named instanceof Map) {
-                    for (const [n, v] of named) set(n, v);
-                } else if (typeof named === 'object') {
-                    for (const n of Object.keys(named)) set(n, named[n]);
-                } else {
-                    throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
+        function resolveAttributes(named) {
+            if (named == null) return undefined;
+            const attributes = [];
+            const set = (name, value) => {
+                const idx = indexByName.get(name);
+                if (idx === undefined) {
+                    throw new Error(`unknown attribute name: ${name}`);
                 }
+                attributes[idx] = String(value);
+            };
+            if (Array.isArray(named)) {
+                for (const [n, v] of named) set(n, v);
+            } else if (named instanceof Map) {
+                for (const [n, v] of named) set(n, v);
+            } else if (typeof named === 'object') {
+                for (const n of Object.keys(named)) set(n, named[n]);
+            } else {
+                throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
             }
+            return attributes;
+        }
 
-            return withContext(fn, {
+        function toBaseOpts(opts) {
+            if (!opts || typeof opts !== 'object') {
+                throw new TypeError('options object required');
+            }
+            return {
                 traceId: opts.traceId,
                 spanId: opts.spanId,
-                attributes,
-            });
+                attributes: resolveAttributes(opts.namedAttributes),
+            };
+        }
+
+        return {
+            runWithContext(fn, opts) {
+                return runWithContext(fn, toBaseOpts(opts));
+            },
+            enterWithContext(opts) {
+                enterWithContext(toBaseOpts(opts));
+            },
         };
     };
+
     // Debug accessor (not part of the stable API; for tests / reader dev):
     // returns a Uint8Array view of the currently attached record, or undefined.
     exports._currentRecordBytes = function () {
@@ -111,12 +130,17 @@ if (process.platform === 'linux') {
         return wrap.bytes();
     };
 } else {
-    withContext = function (fn, _opts) { return fn(); };
+    runWithContext = function (fn, _opts) { return fn(); };
+    enterWithContext = function (_opts) {};
     makeNamedContext = function (_keys) {
-        return function withNamedContext(fn, _opts) { return fn(); };
+        return {
+            runWithContext(fn, _opts) { return fn(); },
+            enterWithContext(_opts) {},
+        };
     };
     exports._currentRecordBytes = function () { return undefined; };
 }
 
-exports.withContext = withContext;
+exports.runWithContext = runWithContext;
+exports.enterWithContext = enterWithContext;
 exports.makeNamedContext = makeNamedContext;

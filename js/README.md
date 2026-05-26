@@ -21,11 +21,11 @@ distributed tracing, user contexts, or any other metadata.
 ## Usage
 
 ```javascript
-const { withContext, makeNamedContext } = require('@polarsignals/custom-labels');
+const { runWithContext, enterWithContext, makeNamedContext } = require('@polarsignals/custom-labels');
 
 // Trace and span IDs are raw bytes (Uint8Array of length 16 and 8). Buffer is
 // acceptable as a Uint8Array subclass.
-withContext(
+runWithContext(
     () => {
         // Code executed here will have the specified context record attached
         // to all CPU profiling stack traces, including any async work
@@ -53,9 +53,9 @@ const keys = [
     'http.method', // index 0
     'http.route',  // index 1
 ];
-const withNamedContext = makeNamedContext(keys);
+const named = makeNamedContext(keys);
 
-withNamedContext(
+named.runWithContext(
     () => handleRequest(),
     {
         traceId: Buffer.from('4bf92f3577b34da6a3ce929d0e0e4736', 'hex'),
@@ -70,9 +70,9 @@ withNamedContext(
 
 ## API
 
-### `withContext(callback, opts)`
+### `runWithContext(callback, opts)`
 
-Executes the callback function with the specified OTEP-4947 thread-context record attached to it. The record is automatically propagated through asynchronous operations spawned by the callback. The record is freed when no longer referenced.
+Executes the callback function with the specified OTEP-4947 thread-context record attached to it. The record is automatically propagated through asynchronous operations spawned by the callback. The previous context (if any) is restored when the callback returns. The record is freed when no longer referenced.
 
 **Parameters:**
 - `callback` - Function to execute with context record attached
@@ -88,7 +88,7 @@ Executes the callback function with the specified OTEP-4947 thread-context recor
 
 **Synchronous callback:**
 ```javascript
-withContext(
+runWithContext(
     () => {
         // Synchronous work will be associated with context record
         processDataSync();
@@ -103,7 +103,7 @@ withContext(
 
 **Async callback:**
 ```javascript
-await withContext(
+await runWithContext(
     async () => {
         // Both synchronous and asynchronous work will be associated with context record
         await processRequest();
@@ -116,14 +116,27 @@ await withContext(
 );
 ```
 
-When passing an async function, `withContext` returns a Promise that must be awaited. When passing a synchronous function, it executes immediately and returns the function's result.
+When passing an async function, `runWithContext` returns a Promise that must be awaited. When passing a synchronous function, it executes immediately and returns the function's result.
+
+### `enterWithContext(opts)`
+
+Attaches the supplied context to the current asynchronous scope without
+scoping it to a callback. Wraps `AsyncLocalStorage.enterWith`: the attachment
+persists until the current async context naturally ends (e.g. the request
+handler that called `enterWithContext` returns). Useful when a callback
+boundary is not a natural fit — for instance, when middleware sets context
+early in a request handler and wants it to apply to the rest of the handler
+chain.
+
+`opts` is the same as for `runWithContext`. Returns nothing.
 
 ### `makeNamedContext(keys)`
 
-Returns `(fn, opts) => fn-result` — a name-addressed variant of `withContext`.
-The `keys` array is the same string list the caller publishes (or has published)
-as the `threadlocal.attribute_key_map` resource attribute in the OTEP-4719
-process context: index N in `keys` is uint8 key index N on the wire. The mapping
+Returns an object `{ runWithContext, enterWithContext }` whose methods accept
+attributes by name instead of by position. The `keys` array is the same
+string list the caller publishes (or has published) as the
+`threadlocal.attribute_key_map` resource attribute in the OTEP-4719 process
+context: index N in `keys` is uint8 key index N on the wire. The mapping
 is captured once at factory time.
 
 `opts.namedAttributes` accepts a `Record<string,unknown>`, a `Map`, or an
@@ -208,7 +221,7 @@ to an actual record.
 * This component does not explicitly coordinate with OTEP-4719 process-context
   for either reading or updating the association of numeric key indices to their
   names.
-* We're not merging attribute sets in nested `withContext` invocations, a new
+* We're not merging attribute sets in nested `runWithContext` invocations, a new
   record completely replaces the previous record for the duration of the nested
   invocation.
 

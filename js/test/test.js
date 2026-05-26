@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const lib = require('..');
-const { withContext, makeNamedContext, _currentRecordBytes } = lib;
+const { runWithContext, enterWithContext, makeNamedContext, _currentRecordBytes } = lib;
 
 const TRACE_ID_BYTES = bytesFromHex('0102030405060708090a0b0c0d0e0f10');
 const SPAN_ID_BYTES  = bytesFromHex('1112131415161718');
@@ -54,7 +54,7 @@ function decodeAttrs(bytes) {
 
 function captureBytes(opts) {
     let bytes;
-    withContext(() => { bytes = _currentRecordBytes(); }, opts);
+    runWithContext(() => { bytes = _currentRecordBytes(); }, opts);
     return bytes;
 }
 
@@ -206,28 +206,28 @@ test('non-array attributes argument is rejected', () => {
     }), /attributes must be an array/);
 });
 
-test('withContext returns fn result', () => {
-    const result = withContext(() => 'ok', { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+test('runWithContext returns fn result', () => {
+    const result = runWithContext(() => 'ok', { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
     assert.equal(result, 'ok');
 });
 
-test('outside withContext, no active record', () => {
+test('outside runWithContext, no active record', () => {
     assert.equal(_currentRecordBytes(), undefined);
 });
 
-test('after withContext returns, no active record', () => {
-    withContext(() => {}, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+test('after runWithContext returns, no active record', () => {
+    runWithContext(() => {}, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
     assert.equal(_currentRecordBytes(), undefined);
 });
 
-test('nested withContext restores parent context after inner returns', () => {
+test('nested runWithContext restores parent context after inner returns', () => {
     const outerOpts = { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES };
     const innerSpanBytes = bytesFromHex('aabbccddeeff0011');
     const innerOpts = { traceId: TRACE_ID_BYTES, spanId: innerSpanBytes };
 
-    withContext(() => {
+    runWithContext(() => {
         const outerBefore = decodeHeader(_currentRecordBytes()).spanId;
-        withContext(() => {
+        runWithContext(() => {
             const inner = decodeHeader(_currentRecordBytes()).spanId;
             assert.deepEqual(inner, innerSpanBytes);
         }, innerOpts);
@@ -237,8 +237,8 @@ test('nested withContext restores parent context after inner returns', () => {
     }, outerOpts);
 });
 
-test('async work inside withContext sees same record after awaits', async () => {
-    await withContext(async () => {
+test('async work inside runWithContext sees same record after awaits', async () => {
+    await runWithContext(async () => {
         const before = decodeHeader(_currentRecordBytes()).spanId;
         await Promise.resolve();
         const afterMicro = decodeHeader(_currentRecordBytes()).spanId;
@@ -250,12 +250,12 @@ test('async work inside withContext sees same record after awaits', async () => 
     }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
 });
 
-test('concurrent async withContext calls keep contexts isolated', async () => {
+test('concurrent async runWithContext calls keep contexts isolated', async () => {
     const aSpan = bytesFromHex('1111111111111111');
     const bSpan = bytesFromHex('2222222222222222');
 
     async function run(spanBytes) {
-        return withContext(async () => {
+        return runWithContext(async () => {
             const observed = [];
             for (let i = 0; i < 4; i++) {
                 observed.push(decodeHeader(_currentRecordBytes()).spanId);
@@ -288,9 +288,9 @@ test('makeNamedContext rejects non-string entries', () => {
 });
 
 test('namedAttributes (object form) resolves to indices', () => {
-    const withNamed = makeNamedContext(['http.method', 'http.route']);
+    const named = makeNamedContext(['http.method', 'http.route']);
     let bytes;
-    withNamed(() => { bytes = _currentRecordBytes(); }, {
+    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: { 'http.method': 'GET', 'http.route': '/x' },
@@ -299,9 +299,9 @@ test('namedAttributes (object form) resolves to indices', () => {
 });
 
 test('namedAttributes (Map form) resolves to indices', () => {
-    const withNamed = makeNamedContext(['a', 'b']);
+    const named = makeNamedContext(['a', 'b']);
     let bytes;
-    withNamed(() => { bytes = _currentRecordBytes(); }, {
+    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: new Map([['a', 'A'], ['b', 'B']]),
@@ -310,9 +310,9 @@ test('namedAttributes (Map form) resolves to indices', () => {
 });
 
 test('namedAttributes (array form) resolves to indices', () => {
-    const withNamed = makeNamedContext(['a', 'b']);
+    const named = makeNamedContext(['a', 'b']);
     let bytes;
-    withNamed(() => { bytes = _currentRecordBytes(); }, {
+    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: [['a', 'A'], ['b', 'B']],
@@ -321,8 +321,8 @@ test('namedAttributes (array form) resolves to indices', () => {
 });
 
 test('unknown name in namedAttributes is rejected', () => {
-    const withNamed = makeNamedContext(['a']);
-    assert.throws(() => withNamed(() => {}, {
+    const named = makeNamedContext(['a']);
+    assert.throws(() => named.runWithContext(() => {}, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: { unknown: 'v' },
@@ -330,14 +330,56 @@ test('unknown name in namedAttributes is rejected', () => {
 });
 
 test('namedAttributes coerces non-string values', () => {
-    const withNamed = makeNamedContext(['n']);
+    const named = makeNamedContext(['n']);
     let bytes;
-    withNamed(() => { bytes = _currentRecordBytes(); }, {
+    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         namedAttributes: { n: 7 },
     });
     assert.deepEqual(decodeAttrs(bytes), ['7']);
+});
+
+test('enterWithContext attaches the record to the current async scope', () => {
+    // Provide an outer scope so the enterWith attachment can't leak past
+    // this test: when this outer runWithContext returns, the inner scope
+    // (and anything enterWith did within it) is discarded.
+    runWithContext(() => {
+        assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, SPAN_ID_BYTES);
+
+        const newSpan = bytesFromHex('aabbccddeeff0011');
+        enterWithContext({ traceId: TRACE_ID_BYTES, spanId: newSpan });
+        assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, newSpan);
+
+        // Subsequent async work in the same scope still sees the new record.
+        return Promise.resolve().then(() => {
+            assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, newSpan);
+        });
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+
+    assert.equal(_currentRecordBytes(), undefined);
+});
+
+test('enterWithContext requires an options object', () => {
+    assert.throws(() => enterWithContext(undefined), /options object required/);
+});
+
+test('makeNamedContext returns an object with both methods', () => {
+    const named = makeNamedContext(['a']);
+    assert.equal(typeof named.runWithContext, 'function');
+    assert.equal(typeof named.enterWithContext, 'function');
+});
+
+test('named.enterWithContext attaches a name-addressed record', () => {
+    const named = makeNamedContext(['route']);
+    runWithContext(() => {
+        named.enterWithContext({
+            traceId: TRACE_ID_BYTES,
+            spanId:  SPAN_ID_BYTES,
+            namedAttributes: { route: '/x' },
+        });
+        assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['/x']);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
 });
 
 test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {

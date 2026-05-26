@@ -1,5 +1,5 @@
 /**
- * Inputs to {@link withContext}.
+ * Inputs to {@link runWithContext} and {@link enterWithContext}.
  *
  * `traceId` and `spanId` are passed as raw bytes (a `Uint8Array` of length 16
  * and 8 respectively; `Buffer` is acceptable as a subclass).
@@ -18,7 +18,7 @@ export interface ContextOptions {
 }
 
 /**
- * Inputs to the function returned by {@link makeNamedContext}. Same as
+ * Inputs to the methods returned by {@link makeNamedContext}. Same as
  * {@link ContextOptions} but attributes are addressed by name; names are
  * resolved to uint8 key indexes using the array passed to
  * {@link makeNamedContext}.
@@ -33,24 +33,43 @@ export interface NamedContextOptions {
 }
 
 /**
- * Run `fn` with the supplied OpenTelemetry thread context attached. The
- * context propagates through asynchronous continuations and Node.js IO
- * callbacks transparently via AsyncLocalStorage.
+ * Object returned by {@link makeNamedContext}. Each method mirrors the
+ * top-level function of the same name, but accepts {@link NamedContextOptions}
+ * (i.e. attributes by name) instead of positional.
+ */
+export interface NamedContext {
+    runWithContext<T>(fn: () => T, opts: NamedContextOptions): T;
+    enterWithContext(opts: NamedContextOptions): void;
+}
+
+/**
+ * Run `fn` with an OTEP-4947 thread-context record attached to the current
+ * asynchronous context. The record propagates through asynchronous
+ * continuations and Node.js IO callbacks transparently via
+ * `AsyncLocalStorage.run`, and is restored to its prior value when `fn`
+ * returns (or its returned promise settles).
  *
  * On non-Linux platforms this is a no-op that simply invokes `fn`.
  */
-export function withContext<T>(fn: () => T, opts: ContextOptions): T;
+export function runWithContext<T>(fn: () => T, opts: ContextOptions): T;
 
 /**
- * Build a name-addressed wrapper around {@link withContext}. The supplied
- * `keys` array is the same string list the caller is expected to publish (or
- * have already published) as the `threadlocal.attribute_key_map` resource
- * attribute in the OTEP-4719 process context: index N in this array is the
- * uint8 key index N in the on-the-wire record.
+ * Attach an OTEP-4947 thread-context record to the current asynchronous
+ * context via `AsyncLocalStorage.enterWith`. Unlike {@link runWithContext}
+ * there is no scope: the attachment persists until the current async context
+ * naturally ends (e.g. the request handler that called `enterWithContext`
+ * returns).
  *
- * The factory pattern lets callers fix the mapping once at init time and
- * reuse the returned function for every attach.
+ * On non-Linux platforms this is a no-op.
  */
-export function makeNamedContext(
-    keys: string[],
-): <T>(fn: () => T, opts: NamedContextOptions) => T;
+export function enterWithContext(opts: ContextOptions): void;
+
+/**
+ * Build name-addressed wrappers around {@link runWithContext} and
+ * {@link enterWithContext}. The supplied `keys` array is the same string
+ * list the caller publishes (or has published) as the
+ * `threadlocal.attribute_key_map` resource attribute in the OTEP-4719 process
+ * context: index N in this array is the uint8 key index N in the on-the-wire
+ * record. The mapping is captured once at factory time.
+ */
+export function makeNamedContext(keys: string[]): NamedContext;
