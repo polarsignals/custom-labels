@@ -28,7 +28,7 @@ using v8::Object;
 
 struct otel_thread_ctx_nodejs_v1_t {
   Global<Object> als_handle;  // offset 0; one V8 internal pointer
-  int als_identity_hash;      // offset sizeof(void*); padding to 16 bytes total
+  int als_identity_hash;      // offset sizeof(void*)
 };
 
 __attribute__((visibility("default")))
@@ -183,19 +183,24 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
       }
       int v_utf8_len = v->Utf8Length(isolate);
       // Spec caps value length at 255 bytes; silently truncate longer values.
-      uint8_t v_len = v_utf8_len > 255 ? 255 : (uint8_t)v_utf8_len;
-      size_t needed = 2u + (size_t)v_len;
-      if (attrs_offset + needed > MAX_ATTRS_DATA_SIZE) {
+      int v_budget = v_utf8_len > 255 ? 255 : v_utf8_len;
+      if (attrs_offset + 2u + (size_t)v_budget > MAX_ATTRS_DATA_SIZE) {
         // Total attribute payload would overflow the 612-byte budget; drop
         // this and any remaining attributes.
         break;
       }
+      // WriteUtf8 returns the actual number of bytes written, which can be
+      // less than `v_budget` when the cap lands inside a multibyte codepoint
+      // — WriteUtf8 stops before writing a partial sequence. Use that count
+      // as the length prefix so readers don't see zero-padding past the
+      // last complete codepoint.
+      int v_written = v->WriteUtf8(
+          isolate,
+          reinterpret_cast<char *>(&record->attrs_data[attrs_offset + 2]),
+          v_budget, nullptr, String::NO_NULL_TERMINATION);
       record->attrs_data[attrs_offset] = (uint8_t)i;
-      record->attrs_data[attrs_offset + 1] = v_len;
-      v->WriteUtf8(isolate,
-                   reinterpret_cast<char *>(&record->attrs_data[attrs_offset + 2]),
-                   v_len, nullptr, String::NO_NULL_TERMINATION);
-      attrs_offset += needed;
+      record->attrs_data[attrs_offset + 1] = (uint8_t)v_written;
+      attrs_offset += 2u + (size_t)v_written;
     }
   }
 

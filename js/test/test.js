@@ -144,6 +144,33 @@ test('value longer than 255 bytes is truncated to 255', () => {
     assert.deepEqual(decodeAttrs(bytes), ['x'.repeat(255)]);
 });
 
+test('truncation does not split a multibyte UTF-8 codepoint', () => {
+    // '€' is 3 UTF-8 bytes; 'é' is 2. The writer must drop whole codepoints
+    // at the 255-byte cap, never emit a partial sequence, and report the
+    // bytes actually written as the length prefix.
+
+    // 85 × € = 255 bytes (exact fit). 86 × € = 258 bytes; cap lands inside
+    // the 86th codepoint, so it must be dropped entirely.
+    const euro = '€';
+    const bytes = captureBytes({
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: [euro.repeat(86)],
+    });
+    assert.deepEqual(decodeAttrs(bytes), [euro.repeat(85)]);
+    assert.equal(decodeHeader(bytes).attrsDataSize, 2 + 255);
+
+    // 84 × € + 2 × 'é' = 252 + 4 = 256 bytes; the cap at 255 lands inside
+    // the second 'é', so only 84 × € + 1 × 'é' = 254 bytes get written.
+    const bytes2 = captureBytes({
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: [euro.repeat(84) + 'éé'],
+    });
+    assert.deepEqual(decodeAttrs(bytes2), [euro.repeat(84) + 'é']);
+    assert.equal(decodeHeader(bytes2).attrsDataSize, 2 + 254);
+});
+
 test('attrs that would exceed the 612-byte payload are dropped at the boundary', () => {
     // Two 255-byte values: 2 * (2 + 255) = 514 bytes used.
     // A third 100-byte value would need 102 more bytes => 616 > 612, dropped.
