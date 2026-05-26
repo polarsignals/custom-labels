@@ -137,13 +137,25 @@ The writer publishes three things the reader needs to find:
    shared library's `dynsym` table, emitted with the TLSDESC dialect. It
    is a struct with the following layout:
 
-   - offset `0`, size `sizeof(void *)` — `als_handle`, a
+   - offset `0`, size `sizeof(void *)` — `cped_slot`, a pointer to the V8
+     isolate's `ContinuationPreservedEmbedderData` slot. The slot holds a
+     `v8::internal::Address` (a `uintptr_t`-sized tagged V8 word).
+     Dereferencing it yields the current `AsyncContextFrame` value, which
+     V8 updates live as it switches between continuations. Lets the reader
+     skip the V8-internal-symbol lookup that would otherwise be needed to
+     find the current isolate.
+   - offset `sizeof(void *)`, size `sizeof(void *)` — `als_handle`, a
      `v8::Global<v8::Object>` referring to the `AsyncLocalStorage`
      instance the writer uses. Its underlying representation is a single
      V8 internal pointer.
-   - offset `sizeof(void *)`, size `sizeof(int)` — `als_identity_hash`,
+   - offset `2 * sizeof(void *)`, size `sizeof(int)` — `als_identity_hash`,
      the JS identity hash of that ALS instance. Useful for narrowing the
      search to a single hash bucket inside the `AsyncContextFrame`'s map.
+
+  All three fields are fixed for a particular V8 isolate once computed.
+  Since the Node.js model is to associate an isolate with a thread in a 1:1
+  fashion, this also means that the values for a particular thread are fixed
+  for the lifetime of the thread and can be cached by a reader.
 
 2. A JavaScript wrapper object (class name `CtxWrap`) stored as the value
    for the ALS instance key inside the current `AsyncContextFrame` (itself

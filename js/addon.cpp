@@ -7,6 +7,7 @@
 
 #include <node.h>
 #include <node_object_wrap.h>
+#include <v8-internal.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -16,9 +17,16 @@
 #include <memory>
 
 // Single thread-local read from outside the process via TLSDESC. It identifies,
-// for the current V8 isolate's thread, which AsyncLocalStorage instance the
-// reader must look up inside the AsyncContextFrame map. `als_identity_hash`
-// lets the reader restrict the search to a single hash bucket.
+// for the current V8 isolate's thread:
+//
+//  - the address of the isolate's ContinuationPreservedEmbedderData slot
+//    (`cped_slot`), whose value V8 swaps as it switches between continuations.
+//    Reading `*cped_slot` yields the active AsyncContextFrame; no V8 internal
+//    symbol lookup is required on the reader side.
+//  - the AsyncLocalStorage instance the reader must look up inside that
+//    AsyncContextFrame map (`als_handle`),
+//  - that instance's JS identity hash (`als_identity_hash`), so the reader
+//    can restrict the lookup to a single hash bucket.
 //
 // Layout is part of the reader ABI: see the README "Discovery contract"
 // section and the static_asserts below.
@@ -27,8 +35,12 @@ using v8::Global;
 using v8::Object;
 
 struct otel_thread_ctx_nodejs_v1_t {
-  Global<Object> als_handle;  // offset 0; one V8 internal pointer
-  int als_identity_hash;      // offset sizeof(void*)
+  // v8::internal::Address is a typedef for uintptr_t; the slot stores one
+  // tagged V8 word. We expose its address so the reader can dereference it
+  // live.
+  v8::internal::Address *cped_slot;  // offset 0
+  Global<Object> als_handle;         // offset sizeof(void*); one V8 internal pointer
+  int als_identity_hash;             // offset 2 * sizeof(void*); 4 bytes + 4 bytes padding
 };
 
 __attribute__((visibility("default")))
@@ -37,10 +49,13 @@ thread_local otel_thread_ctx_nodejs_v1_t otel_thread_ctx_nodejs_v1;
 
 static_assert(sizeof(v8::Global<v8::Object>) == sizeof(void *),
               "Global<Object> must be exactly one pointer wide");
-static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_handle) == 0,
-              "als_handle must be at offset 0");
-static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_identity_hash) ==
+static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, cped_slot) == 0,
+              "cped_slot must be at offset 0");
+static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_handle) ==
                   sizeof(void *),
+              "als_handle must immediately follow cped_slot");
+static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_identity_hash) ==
+                  2 * sizeof(void *),
               "als_identity_hash must immediately follow als_handle");
 
 namespace otel_thread_ctx_nodejs {
@@ -251,13 +266,16 @@ void CtxWrap::Init(Local<Object> exports) {
       .FromJust();
 }
 
-// Reset the Global<Object> before the isolate is torn down. The Global lives
-// in thread-local storage and its destructor only runs at thread exit, which
-// on the main thread happens after the isolate is already gone — causing a
-// segfault. Registering this as a per-isolate cleanup hook the first time
-// StoreAls is called keeps the handle safely scoped to the isolate.
-static void ResetAlsHandle(void * /*arg*/) {
+// Reset the Global<Object> and the cped_slot pointer before the isolate is
+// torn down. The Global lives in thread-local storage and its destructor only
+// runs at thread exit, which on the main thread happens after the isolate is
+// already gone — causing a segfault. Registering this as a per-isolate
+// cleanup hook the first time StoreAls is called keeps the handle safely
+// scoped to the isolate, and the cped_slot pointer points into a struct that
+// won't exist once the isolate is gone.
+static void ResetDiscoveryStruct(void * /*arg*/) {
   otel_thread_ctx_nodejs_v1.als_handle.Reset();
+  otel_thread_ctx_nodejs_v1.cped_slot = nullptr;
 }
 
 void StoreAls(const FunctionCallbackInfo<Value> &args) {
@@ -271,8 +289,11 @@ void StoreAls(const FunctionCallbackInfo<Value> &args) {
   Local<Object> obj = args[0].As<Object>();
   otel_thread_ctx_nodejs_v1.als_identity_hash = obj->GetIdentityHash();
   otel_thread_ctx_nodejs_v1.als_handle = Global<Object>(isolate, obj);
+  otel_thread_ctx_nodejs_v1.cped_slot = reinterpret_cast<v8::internal::Address *>(
+      reinterpret_cast<char *>(isolate) +
+      v8::internal::Internals::kContinuationPreservedEmbedderDataOffset);
   if (!cleanup_registered) {
-    node::AddEnvironmentCleanupHook(isolate, ResetAlsHandle, nullptr);
+    node::AddEnvironmentCleanupHook(isolate, ResetDiscoveryStruct, nullptr);
     cleanup_registered = true;
   }
 }
