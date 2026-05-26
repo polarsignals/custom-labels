@@ -8,6 +8,9 @@ if (process.platform !== 'linux') {
     return;
 }
 
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
 const lib = require('..');
 const { withContext, makeNamedContext, _currentRecordBytes } = lib;
 
@@ -335,5 +338,26 @@ test('namedAttributes coerces non-string values', () => {
         namedAttributes: { n: 7 },
     });
     assert.deepEqual(decodeAttrs(bytes), ['7']);
+});
+
+test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {
+    const addon = path.join(__dirname, '..', 'build', 'Release', 'customlabels.node');
+    const r = spawnSync('readelf', ['--dyn-syms', '--wide', addon], { encoding: 'utf8' });
+    if (r.error && r.error.code === 'ENOENT') {
+        t.skip('readelf not available (install binutils to run this test)');
+        return;
+    }
+    assert.equal(r.status, 0, `readelf failed: ${r.stderr}`);
+    // Match the TLS variable specifically (not the implicit C++ constructor /
+    // destructor symbols, which also embed the struct's type name).
+    const line = r.stdout
+        .split('\n')
+        .find(l => /\sotel_thread_ctx_nodejs_v1$/.test(l));
+    assert.ok(line, 'otel_thread_ctx_nodejs_v1 not present in dynamic symbol table');
+    // Expected columns from readelf --dyn-syms:
+    //   Num: Value Size Type Bind Visibility Ndx Name
+    assert.match(line, /\bTLS\b/, `expected TLS type, got: ${line.trim()}`);
+    assert.match(line, /\bGLOBAL\b/, `expected GLOBAL binding, got: ${line.trim()}`);
+    assert.match(line, /\bDEFAULT\b/, `expected DEFAULT visibility, got: ${line.trim()}`);
 });
 
