@@ -83,9 +83,19 @@ Executes the callback function with the specified OTEP-4947 thread-context recor
   - `attributes` (optional) — positional `Array<string | null | undefined>`:
     index N is the value for uint8 key index N on the wire. Slots that are
     `null`, `undefined`, or array holes are skipped. Non-string values are
-    coerced via `toString`. Values longer than 255 UTF-8 bytes are silently
-    truncated; attributes that would overflow the 612-byte payload budget are
-    silently dropped. Array length must not exceed 256.
+    coerced via `toString`. Individual values longer than 255 UTF-8 bytes are
+    silently truncated to 255 (the on-the-wire length prefix is a uint8).
+    Array length must not exceed 256, and the total encoded payload must not
+    exceed 65535 bytes (the on-the-wire `attrs_data_size` is a uint16) —
+    exceeding that throws.
+
+Records are allocated to fit exactly the encoded payload: an empty
+attribute set produces a 28-byte record; richer sets produce
+correspondingly larger ones. The OTEP recommends keeping records at or under
+640 bytes for compatibility with the OTel eBPF profiler's read buffer, but
+the same OTEP excludes Node.js from the eBPF discovery path, so this
+package does not enforce that ceiling. Readers that bring their own
+size limit will see truncated data past that limit.
 
 **Synchronous callback:**
 ```javascript
@@ -198,7 +208,9 @@ The writer publishes three things the reader needs to find:
 
 3. The record itself is exactly the OTEP-4947 layout: `trace_id[16]`,
    `span_id[8]`, `valid` (always 1, set during construction), `reserved`,
-   `attrs_data_size` (uint16), `attrs_data[612]`.
+   `attrs_data_size` (uint16), then `attrs_data_size` bytes of attribute
+   payload. The total record size is `28 + attrs_data_size`; the writer
+   allocates exactly that, so there is no trailing padding.
 
 The process-context schema version corresponding to this writer is
 `nodejs_v1` (to be set in `threadlocal.schema_version` of the OTEP-4719

@@ -24,13 +24,16 @@ function bytesFromHex(hex) {
 }
 
 function decodeHeader(bytes) {
-    assert.equal(bytes.length, 640, 'record must be exactly 640 bytes');
+    assert.ok(bytes.length >= 28, `record must be at least 28 bytes, got ${bytes.length}`);
+    const attrsDataSize = bytes[26] | (bytes[27] << 8);
+    assert.equal(bytes.length, 28 + attrsDataSize,
+        `record length (${bytes.length}) must equal 28 + attrs_data_size (${attrsDataSize})`);
     return {
         traceId: bytes.slice(0, 16),
         spanId: bytes.slice(16, 24),
         valid: bytes[24],
         reserved: bytes[25],
-        attrsDataSize: bytes[26] | (bytes[27] << 8),
+        attrsDataSize,
     };
 }
 
@@ -174,19 +177,46 @@ test('truncation does not split a multibyte UTF-8 codepoint', () => {
     assert.equal(decodeHeader(bytes2).attrsDataSize, 2 + 254);
 });
 
-test('attrs that would exceed the 612-byte payload are dropped at the boundary', () => {
-    // Two 255-byte values: 2 * (2 + 255) = 514 bytes used.
-    // A third 100-byte value would need 102 more bytes => 616 > 612, dropped.
+test('record is right-sized: empty attrs ⇒ 28-byte record', () => {
+    const bytes = captureBytes({ traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    assert.equal(bytes.length, 28);
+});
+
+test('record is right-sized: one short attribute ⇒ 28 + 2 + len bytes', () => {
+    const bytes = captureBytes({
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: ['GET'],
+    });
+    assert.equal(bytes.length, 28 + 2 + 3);
+});
+
+test('large attrs sets fit (no 612-byte cap)', () => {
+    // Three 255-byte values: 3 * 257 = 771 bytes — would have been silently
+    // dropped past the second under the old 612-byte cap. With the cap
+    // removed they're all present.
     const a = 'a'.repeat(255);
     const b = 'b'.repeat(255);
-    const c = 'c'.repeat(100);
+    const c = 'c'.repeat(255);
     const bytes = captureBytes({
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
         attributes: [a, b, c],
     });
-    assert.deepEqual(decodeAttrs(bytes), [a, b]);
-    assert.equal(decodeHeader(bytes).attrsDataSize, 514);
+    assert.deepEqual(decodeAttrs(bytes), [a, b, c]);
+    assert.equal(decodeHeader(bytes).attrsDataSize, 771);
+    assert.equal(bytes.length, 28 + 771);
+});
+
+test('total attrs payload exceeding 65535 bytes throws', () => {
+    // 256 × 257 = 65792 — three bytes past the uint16 attrs_data_size limit.
+    const big = 'x'.repeat(255);
+    const attributes = new Array(256).fill(big);
+    assert.throws(() => captureBytes({
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes,
+    }), /65535-byte attrs_data_size limit/);
 });
 
 test('attributes array longer than 256 is rejected', () => {
