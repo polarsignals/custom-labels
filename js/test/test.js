@@ -386,7 +386,7 @@ test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {
     const addon = path.join(__dirname, '..', 'build', 'Release', 'customlabels.node');
     const r = spawnSync('readelf', ['--dyn-syms', '--wide', addon], { encoding: 'utf8' });
     if (r.error && r.error.code === 'ENOENT') {
-        t.skip('readelf not available (install binutils to run this test)');
+        assert.fail('readelf not available (install binutils to run this test)');
         return;
     }
     assert.equal(r.status, 0, `readelf failed: ${r.stderr}`);
