@@ -288,8 +288,9 @@ void CtxWrap::Init(Local<Object> exports) {
 // scoped to the isolate, and the cped_slot pointer points into a struct that
 // won't exist once the isolate is gone.
 static void ResetDiscoveryStruct(void * /*arg*/) {
-  otel_thread_ctx_nodejs_v1.als_handle.Reset();
   otel_thread_ctx_nodejs_v1.cped_slot = nullptr;
+  otel_thread_ctx_nodejs_v1.als_handle.Reset();
+  otel_thread_ctx_nodejs_v1.als_identity_hash = 0;
 }
 
 void StoreAls(const FunctionCallbackInfo<Value> &args) {
