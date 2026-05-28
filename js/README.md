@@ -1,9 +1,10 @@
 # OpenTelemetry thread-context writer for Node.js
 
 Node.js library for attaching [OpenTelemetry Thread Local Context Record (OTEP-4947)]
-[otep-4947] to profiling stack traces at runtime. Records are propagated through
-asynchronous operations and can be used to correlate profiling data with
-distributed tracing, user contexts, or any other metadata.
+[otep-4947] to asynchronous contexts at runtime. Records are propagated through
+asynchronous operations and can be used by external readers (such as the
+OpenTelemetry eBPF profiler) to correlate current execution context (e.g. stack
+traces) with distributed tracing, user contexts, or any other metadata.
 
 [otep-4947]: https://github.com/open-telemetry/opentelemetry-specification/pull/4947
 
@@ -28,7 +29,7 @@ const { runWithContext, enterWithContext, makeNamedContext } = require('@polarsi
 runWithContext(
     () => {
         // Code executed here will have the specified context record attached
-        // to all CPU profiling stack traces, including any async work
+        // to it, including any async work that follows from it.
         performWork();
     },
     {
