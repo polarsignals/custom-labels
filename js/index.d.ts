@@ -33,6 +33,21 @@ export interface NamedContextOptions {
 }
 
 /**
+ * OTEP-4719 process-context attributes corresponding to a particular
+ * {@link NamedContext}. Suitable for publishing as part of the application's
+ * process context so an out-of-process reader can decode the uint8 key
+ * indexes emitted in each thread-context record back to attribute names.
+ *
+ * The shape matches the OTEP-4947 process-context schema verbatim: an
+ * application that publishes its process context as a flat string-keyed
+ * attribute map can spread this object into its own attributes.
+ */
+export interface ProcessContextAttributes {
+    readonly 'threadlocal.schema_version': 'nodejs_v1';
+    readonly 'threadlocal.attribute_key_map': readonly string[];
+}
+
+/**
  * Object returned by {@link makeNamedContext}. Each method mirrors the
  * top-level function of the same name, but accepts {@link NamedContextOptions}
  * (i.e. attributes by name) instead of positional.
@@ -40,6 +55,13 @@ export interface NamedContextOptions {
 export interface NamedContext {
     runWithContext<T>(fn: () => T, opts: NamedContextOptions): T;
     enterWithContext(opts: NamedContextOptions): void;
+
+    /**
+     * Snapshot of the OTEP-4719 process-context attributes the caller should
+     * publish to keep this context's key map in sync with what readers see.
+     * Immutable; safe to spread directly into the caller's attribute map.
+     */
+    readonly processContextAttributes: ProcessContextAttributes;
 }
 
 /**

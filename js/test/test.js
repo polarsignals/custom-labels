@@ -370,6 +370,33 @@ test('makeNamedContext returns an object with both methods', () => {
     assert.equal(typeof named.enterWithContext, 'function');
 });
 
+test('makeNamedContext exposes processContextAttributes matching the input keys', () => {
+    const keys = ['http.method', 'http.route', 'user.id'];
+    const named = makeNamedContext(keys);
+    assert.deepEqual(named.processContextAttributes, {
+        'threadlocal.schema_version': 'nodejs_v1',
+        'threadlocal.attribute_key_map': keys,
+    });
+});
+
+test('processContextAttributes is frozen and a defensive copy', () => {
+    const keys = ['http.method', 'http.route'];
+    const named = makeNamedContext(keys);
+    const pca = named.processContextAttributes;
+    assert.ok(Object.isFrozen(pca));
+    assert.ok(Object.isFrozen(pca['threadlocal.attribute_key_map']));
+
+    // Mutating the input array afterwards must not change the snapshot.
+    keys.push('mutated.after');
+    assert.deepEqual(pca['threadlocal.attribute_key_map'], ['http.method', 'http.route']);
+
+    // Attempting to reassign a property silently no-ops in non-strict, throws
+    // in strict (and this test file is strict).
+    assert.throws(() => {
+        pca['threadlocal.schema_version'] = 'tampered';
+    }, /read-only|read only|TypeError/i);
+});
+
 test('named.enterWithContext attaches a name-addressed record', () => {
     const named = makeNamedContext(['route']);
     runWithContext(() => {

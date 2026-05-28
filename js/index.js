@@ -1,6 +1,7 @@
 let runWithContext;
 let enterWithContext;
-let makeNamedContext;
+
+const SCHEMA_VERSION = 'nodejs_v1';
 
 if (process.platform === 'linux') {
     const bindings = require('bindings');
@@ -60,67 +61,6 @@ if (process.platform === 'linux') {
         als.enterWith(wrap);
     };
 
-    makeNamedContext = function (keys) {
-        if (!Array.isArray(keys)) {
-            throw new TypeError('keys must be an array of attribute names');
-        }
-        if (keys.length > 256) {
-            throw new RangeError('keys array exceeds 256 entries');
-        }
-        const indexByName = new Map();
-        keys.forEach((name, i) => {
-            if (typeof name !== 'string') {
-                throw new TypeError('every key must be a string');
-            }
-            if (indexByName.has(name)) {
-                throw new Error(`duplicate key name at indexes ${indexByName.get(name)} and ${i}: ${name}`);
-            }
-            indexByName.set(name, i);
-        });
-
-        function resolveAttributes(named) {
-            if (named == null) return undefined;
-            const attributes = [];
-            const set = (name, value) => {
-                const idx = indexByName.get(name);
-                if (idx === undefined) {
-                    throw new Error(`unknown attribute name: ${name}`);
-                }
-                attributes[idx] = String(value);
-            };
-            if (Array.isArray(named)) {
-                for (const [n, v] of named) set(n, v);
-            } else if (named instanceof Map) {
-                for (const [n, v] of named) set(n, v);
-            } else if (typeof named === 'object') {
-                for (const n of Object.keys(named)) set(n, named[n]);
-            } else {
-                throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
-            }
-            return attributes;
-        }
-
-        function toBaseOpts(opts) {
-            if (!opts || typeof opts !== 'object') {
-                throw new TypeError('options object required');
-            }
-            return {
-                traceId: opts.traceId,
-                spanId: opts.spanId,
-                attributes: resolveAttributes(opts.namedAttributes),
-            };
-        }
-
-        return {
-            runWithContext(fn, opts) {
-                return runWithContext(fn, toBaseOpts(opts));
-            },
-            enterWithContext(opts) {
-                enterWithContext(toBaseOpts(opts));
-            },
-        };
-    };
-
     // Debug accessor (not part of the stable API; for tests / reader dev):
     // returns a Uint8Array view of the currently attached record, or undefined.
     exports._currentRecordBytes = function () {
@@ -132,13 +72,78 @@ if (process.platform === 'linux') {
 } else {
     runWithContext = function (fn, _opts) { return fn(); };
     enterWithContext = function (_opts) {};
-    makeNamedContext = function (_keys) {
-        return {
-            runWithContext(fn, _opts) { return fn(); },
-            enterWithContext(_opts) {},
-        };
-    };
     exports._currentRecordBytes = function () { return undefined; };
+}
+
+function makeNamedContext(keys) {
+    if (!Array.isArray(keys)) {
+        throw new TypeError('keys must be an array of attribute names');
+    }
+    if (keys.length > 256) {
+        throw new RangeError('keys array exceeds 256 entries');
+    }
+    const indexByName = new Map();
+    keys.forEach((name, i) => {
+        if (typeof name !== 'string') {
+            throw new TypeError('every key must be a string');
+        }
+        if (indexByName.has(name)) {
+            throw new Error(`duplicate key name at indexes ${indexByName.get(name)} and ${i}: ${name}`);
+        }
+        indexByName.set(name, i);
+    });
+
+    function resolveAttributes(named) {
+        if (named == null) return undefined;
+        const attributes = [];
+        const set = (name, value) => {
+            const idx = indexByName.get(name);
+            if (idx === undefined) {
+                throw new Error(`unknown attribute name: ${name}`);
+            }
+            attributes[idx] = String(value);
+        };
+        if (Array.isArray(named)) {
+            for (const [n, v] of named) set(n, v);
+        } else if (named instanceof Map) {
+            for (const [n, v] of named) set(n, v);
+        } else if (typeof named === 'object') {
+            for (const n of Object.keys(named)) set(n, named[n]);
+        } else {
+            throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
+        }
+        return attributes;
+    }
+
+    function toBaseOpts(opts) {
+        if (!opts || typeof opts !== 'object') {
+            throw new TypeError('options object required');
+        }
+        return {
+            traceId: opts.traceId,
+            spanId: opts.spanId,
+            attributes: resolveAttributes(opts.namedAttributes),
+        };
+    }
+
+    // Snapshot of the OTEP-4719 process-context attributes the caller should
+    // publish to keep the names this NamedContext resolves against in sync
+    // with what an out-of-process reader sees. Frozen + defensively copied
+    // so the caller can't mutate it back into our internal state.
+    const processContextAttributes = Object.freeze({
+        'threadlocal.schema_version': SCHEMA_VERSION,
+        'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
+    });
+
+    return {
+        runWithContext(fn, opts) {
+            return runWithContext(fn, toBaseOpts(opts));
+        },
+        enterWithContext(opts) {
+            enterWithContext(toBaseOpts(opts));
+        },
+        processContextAttributes,
+    };
 }
 
 exports.runWithContext = runWithContext;

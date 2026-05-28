@@ -133,15 +133,32 @@ chain.
 
 ### `makeNamedContext(keys)`
 
-Returns an object `{ runWithContext, enterWithContext }` whose methods accept
-attributes by name instead of by position. The `keys` array is the same
-string list the caller publishes (or has published) as the
-`threadlocal.attribute_key_map` resource attribute in the OTEP-4719 process
-context: index N in `keys` is uint8 key index N on the wire. The mapping
-is captured once at factory time.
+Returns an object `{ runWithContext, enterWithContext, processContextAttributes }`.
+The first two methods accept attributes by name instead of by position. The
+`keys` array is the same string list the caller publishes (or has published)
+as the `threadlocal.attribute_key_map` resource attribute in the OTEP-4719
+process context: index N in `keys` is uint8 key index N on the wire. The
+mapping is captured once at factory time.
 
 `opts.namedAttributes` accepts a `Record<string,unknown>`, a `Map`, or an
 `Array<[string,unknown]>`. Unknown names throw.
+
+`processContextAttributes` is a frozen, defensively-copied snapshot of the
+OTEP-4719 process-context attributes that correspond to this `NamedContext`'s
+keys:
+
+```javascript
+{
+    'threadlocal.schema_version': 'nodejs_v1',
+    'threadlocal.attribute_key_map': ['http.method', 'http.route', ...],
+}
+```
+
+Spread it (or copy its entries) into whatever attribute map the application
+hands to its OTEP-4719 process-context publisher. Publishing the same
+`keys` you passed to `makeNamedContext` is the easiest way to keep the
+writer-side name-to-index mapping in sync with what an external reader
+will use to decode the on-the-wire `key_index` bytes back to names.
 
 ## Discovery contract (for reader implementers)
 
