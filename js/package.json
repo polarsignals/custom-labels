@@ -1,6 +1,6 @@
 {
-    "name": "@polarsignals/custom-labels",
-    "version": "0.3.9",
+    "name": "@opentelemetry/thread-context-wip",
+    "version": "0.1.0",
     "description": "Node.js writer for the OpenTelemetry thread-context record (OTEP-4947), discoverable via AsyncLocalStorage / AsyncContextFrame.",
     "main": "index.js",
     "scripts": {
