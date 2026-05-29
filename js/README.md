@@ -217,34 +217,74 @@ The process-context schema version corresponding to this writer is
 process context, by whichever component the application uses to publish
 process context).
 
-A reader detecting this schema can find the current thread context record using
-an algorithm that encodes knowledge of the relevant objects in V8 working
-memory. It first needs to dereference the tagged pointer at `cped_slot`. (V8
-tagged pointers have their lowest bit set, it needs to be zeroed out for proper
-dereferencing.) That yields the address of the AsyncContextFrame object, which
-is a V8 JSMap. It will have a tagged pointer to its V8 OrderedHashMap at offset
-(3 * uintptr_t). Following it yields the said map, which is a subclass of V8
-FixedArray, a fixed-size array of uintptr_t slots. Its element 1 (not 0) encodes
-its own length as a V8 Smi (small integer; low 32 bits are zero, need to shift
-it right by 32 bits for the actual value.) Elements 2, 3, 4 encode the number of
-elements, number of deleted elements, and number of hash buckets. A naive
-implementation can at this point dereference `als_handle` (also a tagged
-pointer) to get the pointer to the ALS object and just scan the entire array,
-looking for the same value as a hashtable key. Once found, the next entry is its
-associated value, a JSObject that in its internal field 0 (at offset
-(3 * uintptr_t) from the JSObject, holding the raw native pointer directly since
-Node's bundled V8 has both pointer compression and the sandbox disabled) has a
-pointer to the native `CtxWrap` object, which has a `record_` field pointing
-to the actual thread context record. A more sophisticated implementation can use
-`als_identity_hash` to identify the particular hash bucket and limit scanning of
-the hashtable to only that bucket.
+### Locating a record from the discovery struct
 
-The above algorithm works correctly for the fortunately unchanged layouts of all
-objects involved between Node.js versions 22 and 26.
+The pseudo-C++ below illustrates the chain of dereferences a reader walks
+to go from the `otel_thread_ctx_nodejs_v1` thread-local to the active
+record. It assumes a 64-bit build with V8 pointer compression and the V8
+sandbox both off (true for Node's bundled V8 in v22–v26), so `uintptr_t`
+is 8 bytes and every tagged pointer below is also 8 bytes. Tagged
+pointers have their low bit set; clear it to get the underlying object
+address. Smis are 8-byte values whose low 32 bits are zero and whose
+high 32 bits hold the integer payload (arithmetic-shift right by 32 to
+extract).
 
-A reader should validate the record (at the very least confirm it has its
-`valid` field set to 1) to also ensure that this multi-step pointer chasing led
-to an actual record.
+```cpp
+auto* ctx = read_tls<otel_thread_ctx_nodejs_v1_t>();
+if (*ctx->cped_slot == V8_UNDEFINED) return NO_CONTEXT;
+
+// CPED -> current AsyncContextFrame (a JS Map).
+auto* acf = untag<JSMap>(*ctx->cped_slot);
+
+// JS Map -> backing OrderedHashMap. The `table` field sits at offset
+// 3 * sizeof(uintptr_t) inside the JSMap header.
+auto* table = untag<OrderedHashMap>(
+    *(tagged_ptr*)((char*)acf + 3 * sizeof(uintptr_t)));
+
+// OrderedHashMap is a FixedArray subclass. Layout after its 2-word
+// FixedArray header (map pointer, array-length Smi):
+//   [0]  num_elements   (Smi)
+//   [1]  num_deleted    (Smi)
+//   [2]  num_buckets    (Smi, always a power of two)
+//   [3 .. 3+num_buckets)         -- bucket heads (each: Smi entry index, -1 = empty)
+//   [3+num_buckets .. )          -- data entries: 3 Smi-or-tagged slots
+//                                   per entry: { key, value, next-in-chain }
+// Find the entry whose key pointer equals our live ALS object. A fast
+// reader uses the published identity hash to pick a single bucket and
+// walks just its chain; a simple reader scans every entry.
+uintptr_t als = *ctx->als_handle;     // dereference the Global<Object> handle
+Entry* e = find_entry(table, als, ctx->als_identity_hash);
+if (!e) return NO_CONTEXT;           // ALS not present in this ACF
+
+// Entry value is the JS wrapper for our CtxWrap. Internal field 0 lives
+// at offset 3 * sizeof(uintptr_t) inside the JSObject and holds the raw
+// native pointer to the C++ wrapper directly (low bits zero because
+// the pointer is aligned and Node's V8 has no sandbox).
+auto* wrap_js = untag<JSObject>(e->value);
+auto* wrap = *(CtxWrap**)((char*)wrap_js + 3 * sizeof(uintptr_t));
+
+// CtxWrap::record_ is the first non-inherited field after the
+// node::ObjectWrap base subobject.
+auto* record = wrap->record_;
+if (record->valid != 1) return NO_CONTEXT;  // mid in-place update; skip
+// trace_id, span_id, and attrs_data[0 .. attrs_data_size) are now usable.
+```
+
+The structural sketch above matches the actual layouts in every Node.js
+release in the v22–v26 range. Two refinements you'll want in a real
+implementation:
+
+- **`OrderedHashMap` vs. `SmallOrderedHashMap`.** V8 may use a more
+  compact `SmallOrderedHashMap` layout for low-cardinality maps; in
+  practice the `AsyncContextFrame` map appears to always be the regular
+  `OrderedHashMap` (which is what the pseudo-code assumes), but a
+  defensive reader should sniff the layout before parsing.
+- **Validation.** Trust nothing until you've checked at least
+  `record->valid == 1` — a pointer-chasing walk that lands in the wrong
+  place yields garbage at the same offsets. Additional sanity checks
+  (`attrs_data_size` is plausible, the bucket count is a power of two,
+  Smi-flagged words actually look like Smis) make the reader resilient
+  to version drift before the record itself is touched.
 
 ## Functionality not currently in scope
 
