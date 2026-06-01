@@ -351,22 +351,22 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value> &args) {
   // (No further validation needed here.)
 
   if (new_used <= self->capacity_) {
-    // In-place: OTEP "fixed buffer, toggle valid" mode.
+    // In-place: write the new entries past the current attrs_data_size,
+    // then bump attrs_data_size with a release fence + volatile store so
+    // the content writes are visible before the size store from the
+    // compiler's perspective.
     //
-    //   1. valid = 0 (with fence) — readers that fire mid-update see an
-    //      inconsistent record and bail.
-    //   2. write the appended bytes into the slack region; bump
-    //      attrs_data_size.
-    //   3. valid = 1 (with fence) — readers see the new state.
-    *reinterpret_cast<volatile uint8_t *>(&self->record_->valid) = 0;
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-
+    // No valid=0/valid=1 dance: this is an append-only operation. Bytes
+    // past attrs_data_size aren't observable by the reader, and
+    // attrs_data_size *is* the publication boundary. A reader firing
+    // mid-append sees either the old size (old extent, ignores the
+    // half-written tail) or the new size (full new extent, all bytes
+    // written). Either is consistent.
     memcpy(&self->record_->attrs_data[current_used], appended.data(),
            appended.size());
-    self->record_->attrs_data_size = static_cast<uint16_t>(new_used);
-
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-    *reinterpret_cast<volatile uint8_t *>(&self->record_->valid) = 1;
+    std::atomic_signal_fence(std::memory_order_release);
+    *reinterpret_cast<volatile uint16_t *>(&self->record_->attrs_data_size) =
+        static_cast<uint16_t>(new_used);
     return;
   }
 

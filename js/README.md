@@ -163,9 +163,12 @@ Implementation notes: small records are allocated to fit exactly within
 one 64-byte cache line (28-byte header + 36 bytes of attrs_data), giving
 a few short appends room to land in-place. When they don't, the
 allocation grows geometrically (×2) up to the 65535-byte OTEP
-`attrs_data_size` cap. In-place appends use the OTEP "fixed buffer,
-toggle valid" publication mode; reallocating appends swap the `record_`
-pointer atomically and free the old buffer.
+`attrs_data_size` cap. In-place appends write the new entries past the
+current `attrs_data_size` (where the reader can't yet see them) and then
+publish them by bumping `attrs_data_size` itself — no `valid`-toggle
+dance, since the append is monotonic and `attrs_data_size` is the
+publication boundary. Reallocating appends swap the `record_` pointer
+and free the old buffer.
 
 ### `makeNamedContext(keys)`
 
