@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const lib = require('..');
-const { runWithContext, enterWithContext, appendAttributes, makeNamedContext, _currentRecordBytes } = lib;
+const { runWithContext, enterWithContext, appendAttributes, isContextTruncated, makeNamedContext, _currentRecordBytes } = lib;
 
 const TRACE_ID_BYTES = bytesFromHex('0102030405060708090a0b0c0d0e0f10');
 const SPAN_ID_BYTES  = bytesFromHex('1112131415161718');
@@ -191,32 +191,29 @@ test('record is right-sized: one short attribute ⇒ 28 + 2 + len bytes', () => 
     assert.equal(bytes.length, 28 + 2 + 3);
 });
 
-test('large attrs sets fit (no 612-byte cap)', () => {
-    // Three 255-byte values: 3 * 257 = 771 bytes — would have been silently
-    // dropped past the second under the old 612-byte cap. With the cap
-    // removed they're all present.
+test('attrs sets past the 612-byte cap are truncated (entries past the limit dropped, smaller subsequent entries still fit)', () => {
+    // Two 255-byte values: 2 × 257 = 514 bytes used. A third 255-byte
+    // entry would push to 771 — well over the 612-byte attrs_data cap, so
+    // it's dropped. The trailing 30-byte entry (32 bytes encoded) brings
+    // the total to 546, which still fits — verifies skip-and-continue
+    // rather than break-on-first-overflow.
     const a = 'a'.repeat(255);
     const b = 'b'.repeat(255);
     const c = 'c'.repeat(255);
-    const bytes = captureBytes({
+    const d = 'd'.repeat(30);
+    let bytes;
+    let truncated;
+    runWithContext(() => {
+        bytes = _currentRecordBytes();
+        truncated = isContextTruncated();
+    }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
-        attributes: [a, b, c],
+        attributes: [a, b, c, d],
     });
-    assert.deepEqual(decodeAttrs(bytes), [a, b, c]);
-    assert.equal(decodeHeader(bytes).attrsDataSize, 771);
-    assert.equal(bytes.length, 28 + 771);
-});
-
-test('total attrs payload exceeding 65535 bytes throws', () => {
-    // 256 × 257 = 65792 — three bytes past the uint16 attrs_data_size limit.
-    const big = 'x'.repeat(255);
-    const attributes = new Array(256).fill(big);
-    assert.throws(() => captureBytes({
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes,
-    }), /65535-byte attrs_data_size limit/);
+    assert.deepEqual(decodeAttrs(bytes), [a, b, , d]);
+    assert.equal(decodeHeader(bytes).attrsDataSize, 514 + 32);
+    assert.equal(truncated, true);
 });
 
 test('attributes array longer than 256 is rejected', () => {
@@ -520,26 +517,57 @@ test('appendAttributes is a no-op when all slots are null/undefined', () => {
     }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
 });
 
-test('appendAttributes throws when the combined payload would exceed 65535 bytes', () => {
+test('appendAttributes silently drops entries past the 612-byte cap and sets the truncated flag', () => {
+    const big = 'a'.repeat(255); // 257 bytes encoded
     runWithContext(() => {
-        // Fill the record to ~65000 bytes, then try to append enough to
-        // overflow.
-        const big = 'a'.repeat(255);
-        for (let chunk = 0; chunk < 252; chunk++) {
-            const a = [];
-            a[chunk % 256] = big;
-            appendAttributes(a);
-        }
-        // attrs_data_size is now 252 × 257 = 64764. Another 257-byte entry
-        // brings it to 65021 — still under the cap.
-        appendAttributes([big]);
-        // Now ~65021 bytes used. Three more 257-byte appends (~771 bytes)
-        // would push past 65535. The throw lands on whichever append first
-        // crosses the cap.
-        assert.throws(() => {
-            for (let i = 0; i < 3; i++) appendAttributes([big]);
-        }, /65535-byte attrs_data_size limit/);
+        // 2 × 257 = 514 bytes, all fit.
+        appendAttributes([big, big]);
+        assert.equal(isContextTruncated(), false);
+        // A third 257-byte entry would push to 771 — drops, flag flips.
+        appendAttributes([, , big]);
+        assert.equal(isContextTruncated(), true);
+        assert.equal(decodeHeader(_currentRecordBytes()).attrsDataSize, 514);
+        // A subsequent small entry (e.g. 30 bytes) still fits and is kept;
+        // skip-and-continue applies to per-call as well as per-record-cap.
+        const small = 'x'.repeat(30);
+        appendAttributes([, , , small]);
+        const decoded = decodeAttrs(_currentRecordBytes());
+        assert.equal(decoded[0], big);
+        assert.equal(decoded[1], big);
+        assert.equal(decoded[2], undefined);
+        assert.equal(decoded[3], small);
+        // Flag stays true.
+        assert.equal(isContextTruncated(), true);
     }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('isContextTruncated returns false outside a context', () => {
+    assert.equal(isContextTruncated(), false);
+});
+
+test('isContextTruncated returns false for a non-truncated record', () => {
+    runWithContext(() => {
+        assert.equal(isContextTruncated(), false);
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: ['GET', '/x'],
+    });
+});
+
+test('named context exposes isContextTruncated mirroring the top-level one', () => {
+    const named = makeNamedContext(['a', 'b', 'c']);
+    named.runWithContext(() => {
+        assert.equal(named.isContextTruncated(), false);
+        appendAttributes([, , 'c'.repeat(255), , , 'd'.repeat(255), , , 'e'.repeat(255)]);
+        // Three 257-byte appends past the existing ~2 bytes = 771 > 612.
+        // At least one must have been dropped.
+        assert.equal(named.isContextTruncated(), true);
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        namedAttributes: { a: 'a', b: 'b' },
+    });
 });
 
 test('appendAttributes propagates through async continuations', async () => {

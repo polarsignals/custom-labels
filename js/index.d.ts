@@ -68,6 +68,10 @@ export interface NamedContext {
      * appends at a key that's already present, the OTEP "reader takes the
      * first occurrence" rule means the new value is inert; avoid that.
      *
+     * Attributes that would push the record past the 612-byte attrs_data
+     * cap are silently dropped, and {@link isContextTruncated} starts
+     * returning `true` for the current context.
+     *
      * Throws if no context is currently attached.
      */
     appendAttributes(
@@ -76,6 +80,16 @@ export interface NamedContext {
             | Map<string, unknown>
             | Array<[string, unknown]>,
     ): void;
+
+    /**
+     * Returns true if at any point during the current context's lifetime —
+     * either at construction (`runWithContext` / `enterWithContext`) or in
+     * a subsequent `appendAttributes` call — at least one attribute had
+     * to be dropped because it would have pushed the record past the
+     * 612-byte attrs_data cap. Always returns false if no context is
+     * currently attached.
+     */
+    isContextTruncated(): boolean;
 
     /**
      * Snapshot of the OTEP-4719 process-context attributes the caller should
@@ -116,6 +130,10 @@ export function enterWithContext(opts: ContextOptions): void;
  * at a key index that's already present, the OTEP "reader takes the first
  * occurrence" rule means the new value is inert; avoid that.
  *
+ * Attributes that would push the record past the 612-byte attrs_data cap
+ * are silently dropped, and {@link isContextTruncated} starts returning
+ * `true` for the current context.
+ *
  * Throws if no context is currently attached.
  *
  * On non-Linux platforms this is a no-op.
@@ -123,6 +141,18 @@ export function enterWithContext(opts: ContextOptions): void;
 export function appendAttributes(
     attributes: Array<string | null | undefined>,
 ): void;
+
+/**
+ * Returns true if at any point during the current context's lifetime —
+ * either at construction (via {@link runWithContext} / {@link enterWithContext})
+ * or in a subsequent {@link appendAttributes} call — at least one attribute
+ * had to be dropped because it would have pushed the record past the
+ * 612-byte attrs_data cap.
+ *
+ * Returns false if no context is currently attached, and on non-Linux
+ * platforms.
+ */
+export function isContextTruncated(): boolean;
 
 /**
  * Build name-addressed wrappers around {@link runWithContext} and

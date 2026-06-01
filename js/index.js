@@ -1,6 +1,7 @@
 let runWithContext;
 let enterWithContext;
 let appendAttributes;
+let isContextTruncated;
 
 const SCHEMA_VERSION = 'nodejs_v1';
 
@@ -73,6 +74,13 @@ if (process.platform === 'linux') {
         wrap.append(attributes);
     };
 
+    isContextTruncated = function () {
+        if (!als) return false;
+        const wrap = als.getStore();
+        if (!wrap) return false;
+        return wrap.isTruncated();
+    };
+
     // Debug accessor (not part of the stable API; for tests / reader dev):
     // returns a Uint8Array view of the currently attached record, or undefined.
     exports._currentRecordBytes = function () {
@@ -85,6 +93,7 @@ if (process.platform === 'linux') {
     runWithContext = function (fn, _opts) { return fn(); };
     enterWithContext = function (_opts) {};
     appendAttributes = function (_attributes) {};
+    isContextTruncated = function () { return false; };
     exports._currentRecordBytes = function () { return undefined; };
 }
 
@@ -158,6 +167,9 @@ function makeNamedContext(keys) {
         appendAttributes(namedAttributes) {
             appendAttributes(resolveAttributes(namedAttributes));
         },
+        isContextTruncated() {
+            return isContextTruncated();
+        },
         processContextAttributes,
     };
 }
@@ -165,4 +177,5 @@ function makeNamedContext(keys) {
 exports.runWithContext = runWithContext;
 exports.enterWithContext = enterWithContext;
 exports.appendAttributes = appendAttributes;
+exports.isContextTruncated = isContextTruncated;
 exports.makeNamedContext = makeNamedContext;

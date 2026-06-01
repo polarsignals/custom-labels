@@ -85,17 +85,17 @@ Executes the callback function with the specified OTEP-4947 thread-context recor
     `null`, `undefined`, or array holes are skipped. Non-string values are
     coerced via `toString`. Individual values longer than 255 UTF-8 bytes are
     silently truncated to 255 (the on-the-wire length prefix is a uint8).
-    Array length must not exceed 256, and the total encoded payload must not
-    exceed 65535 bytes (the on-the-wire `attrs_data_size` is a uint16) —
-    exceeding that throws.
+    Array length must not exceed 256. Entries that would push the encoded
+    payload past 612 bytes (the OTEP-recommended 640-byte total-record cap
+    minus the 28-byte header) are silently dropped — see
+    {@link isContextTruncated} for how to detect that.
 
-Records are allocated to fit exactly the encoded payload: an empty
-attribute set produces a 28-byte record; richer sets produce
-correspondingly larger ones. The OTEP recommends keeping records at or under
-640 bytes for compatibility with the OTel eBPF profiler's read buffer, but
-the same OTEP excludes Node.js from the eBPF discovery path, so this
-package does not enforce that ceiling. Readers that bring their own
-size limit will see truncated data past that limit.
+Records are right-sized to fit the encoded payload: an empty attribute set
+produces a 28-byte record; small sets produce correspondingly small ones,
+with a single 64-byte cache-line allocation as the floor. The 612-byte
+ceiling matches the read buffer size of typical eBPF-based readers; if you
+know your readers are all in-process, you can ignore the
+`isContextTruncated` signal and let the silent drop apply.
 
 **Synchronous callback:**
 ```javascript
@@ -157,29 +157,46 @@ key index that's already in the record is allowed but inert — the OTEP
 specifies that readers honor the first occurrence and ignore duplicates,
 so the new value silently disappears. Avoid that.
 
+Entries that would push the encoded payload past the 612-byte cap are
+silently dropped (skip-and-continue: smaller subsequent entries may still
+fit), and `isContextTruncated` starts returning `true` for the current
+context.
+
 Throws if no `runWithContext`/`enterWithContext` is currently active.
 
 Implementation notes: small records are allocated to fit exactly within
 one 64-byte cache line (28-byte header + 36 bytes of attrs_data), giving
-a few short appends room to land in-place. When they don't, the
-allocation grows geometrically (×2) up to the 65535-byte OTEP
-`attrs_data_size` cap. In-place appends write the new entries past the
-current `attrs_data_size` (where the reader can't yet see them) and then
-publish them by bumping `attrs_data_size` itself — no `valid`-toggle
-dance, since the append is monotonic and `attrs_data_size` is the
-publication boundary. Reallocating appends swap the `record_` pointer
-and free the old buffer.
+a few short appends room to land in-place. When they don't, the allocation
+grows geometrically (×2) up to the 612-byte cap. In-place appends write
+the new entries past the current `attrs_data_size` (where the reader can't
+yet see them) and then publish them by bumping `attrs_data_size` itself
+— no `valid`-toggle dance, since the append is monotonic and
+`attrs_data_size` is the publication boundary. Reallocating appends swap
+the `record_` pointer and free the old buffer.
+
+### `isContextTruncated()`
+
+Returns `true` if at any point during the current context's lifetime — at
+construction (`runWithContext` / `enterWithContext`) or in a subsequent
+`appendAttributes` — at least one attribute was dropped because it would
+have pushed the record past the 612-byte attrs_data cap. The flag is
+sticky: once a record reports `true`, it stays `true` for the rest of
+that context's life.
+
+Returns `false` if there is no active context and on non-Linux platforms.
 
 ### `makeNamedContext(keys)`
 
 Returns an object `{ runWithContext, enterWithContext, appendAttributes,
-processContextAttributes }`. The first three methods are the name-addressed
-counterparts of the top-level functions of the same name: they accept
-attributes by name instead of by position. The `keys` array is the same
-string list the caller publishes (or has published) as the
-`threadlocal.attribute_key_map` resource attribute in the OTEP-4719 process
-context: index N in `keys` is uint8 key index N on the wire. The mapping is
-captured once at factory time.
+isContextTruncated, processContextAttributes }`. The first three methods
+are the name-addressed counterparts of the top-level functions of the same
+name (they accept attributes by name instead of by position);
+`isContextTruncated` is just a passthrough to the top-level function of
+the same name, exposed on the named-context object for API symmetry. The
+`keys` array is the same string list the caller publishes (or has
+published) as the `threadlocal.attribute_key_map` resource attribute in
+the OTEP-4719 process context: index N in `keys` is uint8 key index N on
+the wire. The mapping is captured once at factory time.
 
 `opts.namedAttributes` (and the argument to `appendAttributes`) accept a
 `Record<string,unknown>`, a `Map`, or an `Array<[string,unknown]>`. Unknown

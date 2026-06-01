@@ -78,11 +78,6 @@ using v8::String;
 using v8::Uint8Array;
 using v8::Value;
 
-// The OTEP `attrs_data_size` field is a uint16, so this is the hard upper
-// bound on the attribute payload regardless of caller behavior. Exceeding it
-// is treated as a caller error and throws.
-constexpr size_t MAX_ATTRS_DATA_SIZE = 65535;
-
 // OTEP-4947 record. The trailing `attrs_data` is a C99 flexible array member:
 // the writer allocates one contiguous block of size
 // `sizeof(OtelThreadCtxRecord) + attrs_data_size`, and the FAM gives the
@@ -121,6 +116,14 @@ using OwnedRecord =
 // first few appends (if any) can be in-place.
 constexpr size_t MIN_INITIAL_CAPACITY = 64 - sizeof(OtelThreadCtxRecord);
 
+// Upper bound on the attribute payload. Sized so the total record (28-byte
+// header + attrs_data) stays under the OTEP-4947 recommended 640 bytes,
+// which is the read-buffer ceiling for typical eBPF readers. Attributes
+// that would push past this are silently dropped (with `truncated_` set on
+// the wrapper) rather than the writer throwing — the OTEP treats the cap
+// as best-effort.
+constexpr size_t MAX_ATTRS_DATA_SIZE = 640 - sizeof(OtelThreadCtxRecord);
+
 // Wraps a heap-allocated OtelThreadCtxRecord. Lifetime is managed by V8 GC:
 // when no JS code (or AsyncLocalStorage entry) holds a reference, the record
 // is freed.
@@ -144,27 +147,36 @@ class CtxWrap : public ObjectWrap {
   static void New(const FunctionCallbackInfo<Value> &args);
   static void Bytes(const FunctionCallbackInfo<Value> &args);
   static void Append(const FunctionCallbackInfo<Value> &args);
+  static void IsTruncated(const FunctionCallbackInfo<Value> &args);
 
   // Encode the JS array at `attrs_val` into `out` as packed (key, len, value)
-  // entries. Same shape used by both New() and Append(). Throws via
-  // `isolate` and returns false on error.
+  // entries. Same shape used by both New() and Append(). On a parse error
+  // (non-array, etc.) throws via `isolate` and returns false. On per-entry
+  // overflow against the 612-byte attrs_data cap, the entry is dropped,
+  // `*out_truncated` is set to true, and processing continues with the
+  // next entry (a smaller subsequent entry may still fit).
   static bool EncodeAttrs(Isolate *isolate, Local<Context> context,
                           Local<Value> attrs_val, size_t existing_size,
-                          std::vector<uint8_t> *out);
+                          std::vector<uint8_t> *out, bool *out_truncated);
 
   OtelThreadCtxRecord *record_;
   // attrs_data capacity in bytes of the record_ allocation. The total
   // allocation is `sizeof(OtelThreadCtxRecord) + capacity_`. Always
-  // `record_->attrs_data_size <= capacity_`.
+  // `record_->attrs_data_size <= capacity_ <= MAX_ATTRS_DATA_SIZE`.
   size_t capacity_;
+  // Set to true (once, never cleared) if at any point in this record's
+  // lifetime — during New() or any subsequent Append() — at least one
+  // attribute had to be dropped because it would have pushed attrs_data
+  // past MAX_ATTRS_DATA_SIZE.
+  bool truncated_;
 
-  CtxWrap(OtelThreadCtxRecord *record, size_t capacity);
+  CtxWrap(OtelThreadCtxRecord *record, size_t capacity, bool truncated);
 };
 
 CtxWrap::~CtxWrap() { free(record_); }
 
-CtxWrap::CtxWrap(OtelThreadCtxRecord *record, size_t capacity)
-    : record_(record), capacity_(capacity) {}
+CtxWrap::CtxWrap(OtelThreadCtxRecord *record, size_t capacity, bool truncated)
+    : record_(record), capacity_(capacity), truncated_(truncated) {}
 
 // Copy exactly `expected_bytes` bytes out of a JS Uint8Array (or subclass such
 // as Buffer) into `out`. Returns false if the value isn't a Uint8Array or its
@@ -180,14 +192,16 @@ static bool CopyBytes(Local<Value> value, size_t expected_bytes, uint8_t *out) {
 }
 
 // Encode the JS array `attrs_val` (positional, index N = uint8 key N) into
-// `*out` as packed `(key:u8, len:u8, value:u8[len])` entries. `existing_size`
-// is the number of bytes already in `*out` plus any bytes already in a
-// pre-existing record's attrs_data — used to enforce the 65535-byte OTEP
-// total cap correctly even when called from the append path. Returns false
-// (with a thrown JS error) on validation failure.
+// `*out` as packed `(key:u8, len:u8, value:u8[len])` entries.
+// `existing_size` is the number of bytes already in any pre-existing
+// record's attrs_data — used so the cap is enforced across the combined
+// result. On a parse error (wrong type, etc.) throws and returns false. An
+// entry whose encoding would push the combined size past MAX_ATTRS_DATA_SIZE
+// is dropped (not encoded into `*out`), `*out_truncated` is set, and
+// processing continues so a smaller subsequent entry may still fit.
 bool CtxWrap::EncodeAttrs(Isolate *isolate, Local<Context> context,
                           Local<Value> attrs_val, size_t existing_size,
-                          std::vector<uint8_t> *out) {
+                          std::vector<uint8_t> *out, bool *out_truncated) {
   if (attrs_val->IsUndefined() || attrs_val->IsNull()) return true;
   if (!attrs_val->IsArray()) {
     isolate->ThrowError(
@@ -219,16 +233,13 @@ bool CtxWrap::EncodeAttrs(Isolate *isolate, Local<Context> context,
     // longer than 255 UTF-8 bytes are silently truncated to 255.
     int v_budget = v_utf8_len > 255 ? 255 : v_utf8_len;
 
-    // The OTEP attrs_data_size field is a uint16, so the total payload
-    // hard-caps at 65535 bytes. We count both `existing_size` (already in
-    // the record we're appending to, if any) and bytes appended in this
-    // call so the cap is enforced across the combined result.
     const size_t needed = 2u + static_cast<size_t>(v_budget);
     if (existing_size + out->size() + needed > MAX_ATTRS_DATA_SIZE) {
-      isolate->ThrowError(
-          "encoded attributes exceed the 65535-byte attrs_data_size "
-          "limit imposed by the OTEP-4947 record format");
-      return false;
+      // Doesn't fit in the remaining budget; drop this entry and set the
+      // truncated flag. Smaller subsequent entries may still fit, so we
+      // continue rather than break.
+      *out_truncated = true;
+      continue;
     }
 
     const size_t entry_off = out->size();
@@ -278,12 +289,16 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   }
 
   // Encode attributes into a transient buffer first so we can size the
-  // record allocation correctly. The OTEP doesn't mandate a fixed-size
-  // record — attrs_data_size tells the reader how many bytes follow the
-  // 28-byte header — so we publish only as much as we have (plus a small
-  // slack to absorb subsequent appends).
+  // record allocation correctly. The 612-byte attrs_data cap mirrors the
+  // OTEP-recommended 640-byte total-record ceiling (which exists for
+  // eBPF readers that copy the record into a fixed-size kernel buffer);
+  // entries that wouldn't fit are silently dropped and recorded via the
+  // truncated flag below.
   std::vector<uint8_t> attrs_buf;
-  if (!EncodeAttrs(isolate, context, args[2], 0, &attrs_buf)) return;
+  bool truncated = false;
+  if (!EncodeAttrs(isolate, context, args[2], 0, &attrs_buf, &truncated)) {
+    return;
+  }
 
   // Pick the initial attrs_data capacity. Small records get a 64-byte
   // floor so the first append is likely to fit in-place; larger records
@@ -316,7 +331,7 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   std::atomic_signal_fence(std::memory_order_release);
   *reinterpret_cast<volatile uint8_t *>(&record->valid) = 1;
 
-  CtxWrap *self = new CtxWrap(record.release(), capacity);
+  CtxWrap *self = new CtxWrap(record.release(), capacity, truncated);
   self->Wrap(args.This());
   args.GetReturnValue().Set(args.This());
 }
@@ -341,14 +356,20 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value> &args) {
 
   const size_t current_used = self->record_->attrs_data_size;
   std::vector<uint8_t> appended;
-  if (!EncodeAttrs(isolate, context, args[0], current_used, &appended)) return;
+  bool truncated = false;
+  if (!EncodeAttrs(isolate, context, args[0], current_used, &appended,
+                   &truncated)) {
+    return;
+  }
+  if (truncated) self->truncated_ = true;
 
-  // Nothing to append (all slots were null/undefined or the array was empty).
+  // Nothing to append — either the input array was empty, every slot was
+  // null/undefined, or every entry was dropped because the record is
+  // already at the cap.
   if (appended.empty()) return;
 
   const size_t new_used = current_used + appended.size();
-  // EncodeAttrs already enforced the 65535 cap; assert in debug.
-  // (No further validation needed here.)
+  // EncodeAttrs already enforced the cap; new_used <= MAX_ATTRS_DATA_SIZE.
 
   if (new_used <= self->capacity_) {
     // In-place: write the new entries past the current attrs_data_size,
@@ -404,6 +425,19 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value> &args) {
   free(old_rec);
 }
 
+// Returns true if any attribute was ever dropped from this wrapper's
+// record because it would have pushed attrs_data past the cap — set during
+// CtxWrap::New() if the initial set didn't fit, or by any subsequent
+// CtxWrap::Append() call.
+void CtxWrap::IsTruncated(const FunctionCallbackInfo<Value> &args) {
+  CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
+  if (!self) {
+    args.GetIsolate()->ThrowError("not a CtxWrap");
+    return;
+  }
+  args.GetReturnValue().Set(self->truncated_);
+}
+
 // Debug accessor: returns the record (header + attrs_data) as a fresh
 // Uint8Array sized to the actual on-the-wire length. Not part of the stable
 // API; intended for tests and out-of-process-reader development.
@@ -439,6 +473,9 @@ void CtxWrap::Init(Local<Object> exports) {
   tpl->PrototypeTemplate()->Set(
       String::NewFromUtf8(isolate, "append").ToLocalChecked(),
       FunctionTemplate::New(isolate, Append));
+  tpl->PrototypeTemplate()->Set(
+      String::NewFromUtf8(isolate, "isTruncated").ToLocalChecked(),
+      FunctionTemplate::New(isolate, IsTruncated));
 
   Local<Function> constructor = tpl->GetFunction(context).ToLocalChecked();
   exports
