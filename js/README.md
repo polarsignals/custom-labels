@@ -141,17 +141,46 @@ chain.
 
 `opts` is the same as for `runWithContext`. Returns nothing.
 
+### `appendAttributes(attributes)`
+
+Append attributes to the active thread-context record without otherwise
+disturbing it. Intended for the common case where a tracing span starts
+with a base set of attributes and accumulates more (e.g. `http.status`,
+`error.message`) as the span runs.
+
+`attributes` has the same shape as `opts.attributes` in `runWithContext`:
+positional, index N is the value for uint8 key N, null/undefined/holes
+are skipped.
+
+**Append-only**: existing entries are never overwritten. Appending at a
+key index that's already in the record is allowed but inert — the OTEP
+specifies that readers honor the first occurrence and ignore duplicates,
+so the new value silently disappears. Avoid that.
+
+Throws if no `runWithContext`/`enterWithContext` is currently active.
+
+Implementation notes: small records are allocated to fit exactly within
+one 64-byte cache line (28-byte header + 36 bytes of attrs_data), giving
+a few short appends room to land in-place. When they don't, the
+allocation grows geometrically (×2) up to the 65535-byte OTEP
+`attrs_data_size` cap. In-place appends use the OTEP "fixed buffer,
+toggle valid" publication mode; reallocating appends swap the `record_`
+pointer atomically and free the old buffer.
+
 ### `makeNamedContext(keys)`
 
-Returns an object `{ runWithContext, enterWithContext, processContextAttributes }`.
-The first two methods accept attributes by name instead of by position. The
-`keys` array is the same string list the caller publishes (or has published)
-as the `threadlocal.attribute_key_map` resource attribute in the OTEP-4719
-process context: index N in `keys` is uint8 key index N on the wire. The
-mapping is captured once at factory time.
+Returns an object `{ runWithContext, enterWithContext, appendAttributes,
+processContextAttributes }`. The first three methods are the name-addressed
+counterparts of the top-level functions of the same name: they accept
+attributes by name instead of by position. The `keys` array is the same
+string list the caller publishes (or has published) as the
+`threadlocal.attribute_key_map` resource attribute in the OTEP-4719 process
+context: index N in `keys` is uint8 key index N on the wire. The mapping is
+captured once at factory time.
 
-`opts.namedAttributes` accepts a `Record<string,unknown>`, a `Map`, or an
-`Array<[string,unknown]>`. Unknown names throw.
+`opts.namedAttributes` (and the argument to `appendAttributes`) accept a
+`Record<string,unknown>`, a `Map`, or an `Array<[string,unknown]>`. Unknown
+names throw.
 
 `processContextAttributes` is a frozen, defensively-copied snapshot of the
 OTEP-4719 process-context attributes that correspond to this `NamedContext`'s

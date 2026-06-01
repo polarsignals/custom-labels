@@ -114,13 +114,22 @@ struct OtelThreadCtxRecordDeleter {
 using OwnedRecord =
     std::unique_ptr<OtelThreadCtxRecord, OtelThreadCtxRecordDeleter>;
 
+// Floor on the attrs_data capacity of a freshly allocated record. Sized so
+// the total allocation is one 64-byte cache line — matching the OTEP-4947
+// "frugal writer" guidance ("a frugal writer may aim to keep the entire
+// record under 64 bytes") — and giving small records some slack so the
+// first few appends (if any) can be in-place.
+constexpr size_t MIN_INITIAL_CAPACITY = 64 - sizeof(OtelThreadCtxRecord);
+
 // Wraps a heap-allocated OtelThreadCtxRecord. Lifetime is managed by V8 GC:
 // when no JS code (or AsyncLocalStorage entry) holds a reference, the record
 // is freed.
 //
 // Layout note for the reader: `record_` is private to C++ but its byte
 // position within CtxWrap is part of the reader contract. It is the first
-// field after the node::ObjectWrap base subobject.
+// field after the node::ObjectWrap base subobject. `capacity_` sits after
+// `record_` purely for the writer's own bookkeeping — the reader never
+// touches it.
 class CtxWrap : public ObjectWrap {
  public:
   ~CtxWrap() override;
@@ -134,15 +143,28 @@ class CtxWrap : public ObjectWrap {
  private:
   static void New(const FunctionCallbackInfo<Value> &args);
   static void Bytes(const FunctionCallbackInfo<Value> &args);
+  static void Append(const FunctionCallbackInfo<Value> &args);
+
+  // Encode the JS array at `attrs_val` into `out` as packed (key, len, value)
+  // entries. Same shape used by both New() and Append(). Throws via
+  // `isolate` and returns false on error.
+  static bool EncodeAttrs(Isolate *isolate, Local<Context> context,
+                          Local<Value> attrs_val, size_t existing_size,
+                          std::vector<uint8_t> *out);
 
   OtelThreadCtxRecord *record_;
+  // attrs_data capacity in bytes of the record_ allocation. The total
+  // allocation is `sizeof(OtelThreadCtxRecord) + capacity_`. Always
+  // `record_->attrs_data_size <= capacity_`.
+  size_t capacity_;
 
-  explicit CtxWrap(OtelThreadCtxRecord *record);
+  CtxWrap(OtelThreadCtxRecord *record, size_t capacity);
 };
 
 CtxWrap::~CtxWrap() { free(record_); }
 
-CtxWrap::CtxWrap(OtelThreadCtxRecord *record) : record_(record) {}
+CtxWrap::CtxWrap(OtelThreadCtxRecord *record, size_t capacity)
+    : record_(record), capacity_(capacity) {}
 
 // Copy exactly `expected_bytes` bytes out of a JS Uint8Array (or subclass such
 // as Buffer) into `out`. Returns false if the value isn't a Uint8Array or its
@@ -154,6 +176,77 @@ static bool CopyBytes(Local<Value> value, size_t expected_bytes, uint8_t *out) {
   uint8_t *base = static_cast<uint8_t *>(arr->Buffer()->Data()) +
                   arr->ByteOffset();
   memcpy(out, base, expected_bytes);
+  return true;
+}
+
+// Encode the JS array `attrs_val` (positional, index N = uint8 key N) into
+// `*out` as packed `(key:u8, len:u8, value:u8[len])` entries. `existing_size`
+// is the number of bytes already in `*out` plus any bytes already in a
+// pre-existing record's attrs_data — used to enforce the 65535-byte OTEP
+// total cap correctly even when called from the append path. Returns false
+// (with a thrown JS error) on validation failure.
+bool CtxWrap::EncodeAttrs(Isolate *isolate, Local<Context> context,
+                          Local<Value> attrs_val, size_t existing_size,
+                          std::vector<uint8_t> *out) {
+  if (attrs_val->IsUndefined() || attrs_val->IsNull()) return true;
+  if (!attrs_val->IsArray()) {
+    isolate->ThrowError(
+        "attributes must be an array indexed by key, or undefined");
+    return false;
+  }
+  Local<Array> attrs = attrs_val.As<Array>();
+  uint32_t n = attrs->Length();
+  if (n > 256) {
+    isolate->ThrowError("attributes array length must not exceed 256");
+    return false;
+  }
+  // Reserve a conservative upper bound; reallocations are cheap but
+  // unnecessary for the typical small attribute set.
+  out->reserve(out->size() + n * 4);
+  for (uint32_t i = 0; i < n; ++i) {
+    Local<Value> val_val;
+    if (!attrs->Get(context, i).ToLocal(&val_val)) return false;
+    // null / undefined / array holes mean "no value at this key index".
+    if (val_val->IsUndefined() || val_val->IsNull()) continue;
+
+    Local<String> v;
+    if (!val_val->ToString(context).ToLocal(&v)) {
+      isolate->ThrowError("failed to coerce attribute value to string");
+      return false;
+    }
+    int v_utf8_len = v->Utf8Length(isolate);
+    // The on-the-wire val_len prefix is a uint8, so individual values
+    // longer than 255 UTF-8 bytes are silently truncated to 255.
+    int v_budget = v_utf8_len > 255 ? 255 : v_utf8_len;
+
+    // The OTEP attrs_data_size field is a uint16, so the total payload
+    // hard-caps at 65535 bytes. We count both `existing_size` (already in
+    // the record we're appending to, if any) and bytes appended in this
+    // call so the cap is enforced across the combined result.
+    const size_t needed = 2u + static_cast<size_t>(v_budget);
+    if (existing_size + out->size() + needed > MAX_ATTRS_DATA_SIZE) {
+      isolate->ThrowError(
+          "encoded attributes exceed the 65535-byte attrs_data_size "
+          "limit imposed by the OTEP-4947 record format");
+      return false;
+    }
+
+    const size_t entry_off = out->size();
+    out->resize(entry_off + needed);
+    (*out)[entry_off] = static_cast<uint8_t>(i);
+    // WriteUtf8 returns the actual number of bytes written, which can be
+    // less than v_budget when the cap lands inside a multibyte codepoint
+    // — WriteUtf8 stops before writing a partial sequence. Use that count
+    // as the length prefix, and shrink the buffer back so the next entry
+    // starts at exactly the right offset.
+    int v_written = v->WriteUtf8(
+        isolate, reinterpret_cast<char *>(&(*out)[entry_off + 2]), v_budget,
+        nullptr, String::NO_NULL_TERMINATION);
+    (*out)[entry_off + 1] = static_cast<uint8_t>(v_written);
+    if (v_written < v_budget) {
+      out->resize(entry_off + 2u + static_cast<size_t>(v_written));
+    }
+  }
   return true;
 }
 
@@ -184,77 +277,24 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
     return;
   }
 
-  // Encode attributes into a transient buffer first so we can allocate the
-  // final record at exactly the size it needs. The OTEP doesn't mandate a
-  // fixed-size record — attrs_data_size tells the reader how many bytes
-  // follow the 28-byte header — so we publish only as much as we have, and
-  // skip the OTEP's recommended 640-byte ceiling (which exists for eBPF
-  // readers; per the OTEP, Node.js readers don't use that path).
+  // Encode attributes into a transient buffer first so we can size the
+  // record allocation correctly. The OTEP doesn't mandate a fixed-size
+  // record — attrs_data_size tells the reader how many bytes follow the
+  // 28-byte header — so we publish only as much as we have (plus a small
+  // slack to absorb subsequent appends).
   std::vector<uint8_t> attrs_buf;
-  if (!args[2]->IsUndefined() && !args[2]->IsNull()) {
-    if (!args[2]->IsArray()) {
-      isolate->ThrowError(
-          "attributes must be an array indexed by key, or undefined");
-      return;
-    }
-    Local<Array> attrs = args[2].As<Array>();
-    uint32_t n = attrs->Length();
-    if (n > 256) {
-      isolate->ThrowError("attributes array length must not exceed 256");
-      return;
-    }
-    // Reserve a conservative upper bound; reallocations are cheap but
-    // unnecessary for the typical small attribute set.
-    attrs_buf.reserve(n * 4);
-    for (uint32_t i = 0; i < n; ++i) {
-      Local<Value> val_val;
-      if (!attrs->Get(context, i).ToLocal(&val_val)) return;
-      // null / undefined / array holes mean "no value at this key index".
-      if (val_val->IsUndefined() || val_val->IsNull()) continue;
+  if (!EncodeAttrs(isolate, context, args[2], 0, &attrs_buf)) return;
 
-      Local<String> v;
-      if (!val_val->ToString(context).ToLocal(&v)) {
-        isolate->ThrowError("failed to coerce attribute value to string");
-        return;
-      }
-      int v_utf8_len = v->Utf8Length(isolate);
-      // The on-the-wire val_len prefix is a uint8, so individual values
-      // longer than 255 UTF-8 bytes are silently truncated to 255.
-      int v_budget = v_utf8_len > 255 ? 255 : v_utf8_len;
-
-      // The OTEP attrs_data_size field is a uint16, so the *total* payload
-      // hard-caps at 65535 bytes. With the existing per-value cap of 255
-      // and per-entry overhead of 2 bytes, only pathological callers
-      // (close to 256 max-sized attrs) can hit this — throw rather than
-      // silently drop.
-      const size_t needed = 2u + static_cast<size_t>(v_budget);
-      if (attrs_buf.size() + needed > MAX_ATTRS_DATA_SIZE) {
-        isolate->ThrowError(
-            "encoded attributes exceed the 65535-byte attrs_data_size "
-            "limit imposed by the OTEP-4947 record format");
-        return;
-      }
-
-      const size_t entry_off = attrs_buf.size();
-      attrs_buf.resize(entry_off + needed);
-      attrs_buf[entry_off] = static_cast<uint8_t>(i);
-      // WriteUtf8 returns the actual number of bytes written, which can be
-      // less than v_budget when the cap lands inside a multibyte codepoint
-      // — WriteUtf8 stops before writing a partial sequence. Use that
-      // count as the length prefix, and shrink the buffer back so the next
-      // entry starts at exactly the right offset.
-      int v_written = v->WriteUtf8(
-          isolate, reinterpret_cast<char *>(&attrs_buf[entry_off + 2]),
-          v_budget, nullptr, String::NO_NULL_TERMINATION);
-      attrs_buf[entry_off + 1] = static_cast<uint8_t>(v_written);
-      if (v_written < v_budget) {
-        attrs_buf.resize(entry_off + 2u + static_cast<size_t>(v_written));
-      }
-    }
-  }
-
-  // Allocate one contiguous block of header + attrs_data sized to fit.
-  const size_t total = sizeof(OtelThreadCtxRecord) + attrs_buf.size();
+  // Pick the initial attrs_data capacity. Small records get a 64-byte
+  // floor so the first append is likely to fit in-place; larger records
+  // are sized exactly to what's needed (the extra slack a doubling
+  // strategy would buy is dwarfed by the existing memory footprint and
+  // doesn't change the geometric-growth amortized cost of subsequent
+  // appends).
+  size_t capacity = attrs_buf.size() < MIN_INITIAL_CAPACITY
+                        ? MIN_INITIAL_CAPACITY
+                        : attrs_buf.size();
+  const size_t total = sizeof(OtelThreadCtxRecord) + capacity;
   OwnedRecord record(
       static_cast<OtelThreadCtxRecord *>(calloc(1, total)));
   if (!record) {
@@ -271,19 +311,97 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   // OTEP-4947 publication protocol: order the `valid = 1` store after every
   // other field write, with an `atomic_signal_fence` to pin that ordering at
   // compile time and a volatile store so the compiler can't fold or hoist
-  // the write. Our current design doesn't actually need this — the record
-  // is freshly allocated and only becomes visible to a reader via the V8
-  // hand-off below, which already establishes happens-before with all the
-  // field writes — but it matches the spec verbatim and is the protocol the
-  // alternative "fixed buffer, toggle valid" publication mode would require
-  // if we ever switch to it. Both the fence and the volatile store are
-  // zero-cost at runtime.
+  // the write. The signal fence + volatile store is also the protocol used
+  // by Append() in its in-place path.
   std::atomic_signal_fence(std::memory_order_release);
   *reinterpret_cast<volatile uint8_t *>(&record->valid) = 1;
 
-  CtxWrap *self = new CtxWrap(record.release());
+  CtxWrap *self = new CtxWrap(record.release(), capacity);
   self->Wrap(args.This());
   args.GetReturnValue().Set(args.This());
+}
+
+// Append entries to the active record. Either modifies the record in place
+// (if the appended bytes fit in the current allocation's slack) or
+// reallocates to a larger one (geometrically), keeping invariant
+// `record_->attrs_data_size <= capacity_`.
+void CtxWrap::Append(const FunctionCallbackInfo<Value> &args) {
+  Isolate *isolate = args.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+
+  CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
+  if (!self) {
+    isolate->ThrowError("not a CtxWrap");
+    return;
+  }
+  if (args.Length() != 1) {
+    isolate->ThrowError("append expects 1 argument: attributes");
+    return;
+  }
+
+  const size_t current_used = self->record_->attrs_data_size;
+  std::vector<uint8_t> appended;
+  if (!EncodeAttrs(isolate, context, args[0], current_used, &appended)) return;
+
+  // Nothing to append (all slots were null/undefined or the array was empty).
+  if (appended.empty()) return;
+
+  const size_t new_used = current_used + appended.size();
+  // EncodeAttrs already enforced the 65535 cap; assert in debug.
+  // (No further validation needed here.)
+
+  if (new_used <= self->capacity_) {
+    // In-place: OTEP "fixed buffer, toggle valid" mode.
+    //
+    //   1. valid = 0 (with fence) — readers that fire mid-update see an
+    //      inconsistent record and bail.
+    //   2. write the appended bytes into the slack region; bump
+    //      attrs_data_size.
+    //   3. valid = 1 (with fence) — readers see the new state.
+    *reinterpret_cast<volatile uint8_t *>(&self->record_->valid) = 0;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+
+    memcpy(&self->record_->attrs_data[current_used], appended.data(),
+           appended.size());
+    self->record_->attrs_data_size = static_cast<uint16_t>(new_used);
+
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    *reinterpret_cast<volatile uint8_t *>(&self->record_->valid) = 1;
+    return;
+  }
+
+  // Doesn't fit. Reallocate with geometric growth, capped at the 65535
+  // hard cap.
+  size_t new_cap = self->capacity_ * 2;
+  if (new_cap < new_used) new_cap = new_used;
+  if (new_cap > MAX_ATTRS_DATA_SIZE) new_cap = MAX_ATTRS_DATA_SIZE;
+
+  const size_t total = sizeof(OtelThreadCtxRecord) + new_cap;
+  OwnedRecord new_rec(
+      static_cast<OtelThreadCtxRecord *>(calloc(1, total)));
+  if (!new_rec) {
+    isolate->ThrowError("allocation failed");
+    return;
+  }
+  // Copy the existing record (header + already-written attrs_data).
+  memcpy(new_rec.get(), self->record_,
+         sizeof(OtelThreadCtxRecord) + current_used);
+  // Append the new entries and update attrs_data_size.
+  memcpy(&new_rec->attrs_data[current_used], appended.data(), appended.size());
+  new_rec->attrs_data_size = static_cast<uint16_t>(new_used);
+  // The copy preserves valid=1 from the source record, but make it explicit.
+  new_rec->valid = 1;
+
+  // Publish: the pointer swap is the atomic boundary the reader sees. The
+  // fence keeps the new_rec content writes ordered before the pointer
+  // store from the compiler's perspective; OTEP signal-handler semantics
+  // (the writer is stopped during reads) take care of CPU-side ordering
+  // and make immediate freeing of the old record safe.
+  std::atomic_signal_fence(std::memory_order_release);
+  OtelThreadCtxRecord *old_rec = self->record_;
+  self->record_ = new_rec.release();
+  self->capacity_ = new_cap;
+  free(old_rec);
 }
 
 // Debug accessor: returns the record (header + attrs_data) as a fresh
@@ -318,6 +436,9 @@ void CtxWrap::Init(Local<Object> exports) {
   tpl->PrototypeTemplate()->Set(
       String::NewFromUtf8(isolate, "bytes").ToLocalChecked(),
       FunctionTemplate::New(isolate, Bytes));
+  tpl->PrototypeTemplate()->Set(
+      String::NewFromUtf8(isolate, "append").ToLocalChecked(),
+      FunctionTemplate::New(isolate, Append));
 
   Local<Function> constructor = tpl->GetFunction(context).ToLocalChecked();
   exports

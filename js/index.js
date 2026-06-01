@@ -1,5 +1,6 @@
 let runWithContext;
 let enterWithContext;
+let appendAttributes;
 
 const SCHEMA_VERSION = 'nodejs_v1';
 
@@ -61,6 +62,17 @@ if (process.platform === 'linux') {
         als.enterWith(wrap);
     };
 
+    appendAttributes = function (attributes) {
+        if (!als) {
+            throw new Error('no active thread context; call runWithContext or enterWithContext first');
+        }
+        const wrap = als.getStore();
+        if (!wrap) {
+            throw new Error('no active thread context; call runWithContext or enterWithContext first');
+        }
+        wrap.append(attributes);
+    };
+
     // Debug accessor (not part of the stable API; for tests / reader dev):
     // returns a Uint8Array view of the currently attached record, or undefined.
     exports._currentRecordBytes = function () {
@@ -72,6 +84,7 @@ if (process.platform === 'linux') {
 } else {
     runWithContext = function (fn, _opts) { return fn(); };
     enterWithContext = function (_opts) {};
+    appendAttributes = function (_attributes) {};
     exports._currentRecordBytes = function () { return undefined; };
 }
 
@@ -142,10 +155,14 @@ function makeNamedContext(keys) {
         enterWithContext(opts) {
             enterWithContext(toBaseOpts(opts));
         },
+        appendAttributes(namedAttributes) {
+            appendAttributes(resolveAttributes(namedAttributes));
+        },
         processContextAttributes,
     };
 }
 
 exports.runWithContext = runWithContext;
 exports.enterWithContext = enterWithContext;
+exports.appendAttributes = appendAttributes;
 exports.makeNamedContext = makeNamedContext;

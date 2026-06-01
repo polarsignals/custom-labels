@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const lib = require('..');
-const { runWithContext, enterWithContext, makeNamedContext, _currentRecordBytes } = lib;
+const { runWithContext, enterWithContext, appendAttributes, makeNamedContext, _currentRecordBytes } = lib;
 
 const TRACE_ID_BYTES = bytesFromHex('0102030405060708090a0b0c0d0e0f10');
 const SPAN_ID_BYTES  = bytesFromHex('1112131415161718');
@@ -437,6 +437,149 @@ test('named.enterWithContext attaches a name-addressed record', () => {
         });
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['/x']);
     }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('appendAttributes adds entries to the current record', () => {
+    runWithContext(() => {
+        assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['GET']);
+        appendAttributes([, , '200']);
+        assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['GET', , '200']);
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: ['GET'],
+    });
+});
+
+test('appendAttributes is in-place when bytes fit in the slack', () => {
+    runWithContext(() => {
+        // Initial allocation has at least 64 bytes of attrs_data capacity;
+        // one "xxx" entry occupies 5. An append of "ab" (4 bytes encoded)
+        // fits in the slack, so the append takes the in-place path.
+        const before = _currentRecordBytes();
+        appendAttributes([, 'ab']);
+        const after = _currentRecordBytes();
+        assert.deepEqual(decodeAttrs(after), ['xxx', 'ab']);
+        assert.equal(after.length, before.length + 2 + 2);
+        // The header up to attrs_data_size and the original entry are
+        // untouched. attrs_data_size itself legitimately changes (5 → 9),
+        // so we skip it. We can't observe in-place vs reallocate identity
+        // from JS, but the unchanged trace_id/span_id/valid/reserved bytes
+        // plus the unchanged "xxx" entry are consistent with the in-place
+        // path; a behavioral assertion is the closest the JS layer can
+        // make.
+        assert.deepEqual(after.slice(0, 26), before.slice(0, 26));
+        assert.deepEqual(after.slice(28, 33), before.slice(28, 33));
+        assert.equal(after[24], 1);  // valid restored to 1 after the dance
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: ['xxx'],
+    });
+});
+
+test('appendAttributes grows the record geometrically when slack runs out', () => {
+    runWithContext(() => {
+        // Append 8 × 60-byte values. Each encodes to 62 bytes; 8 of them =
+        // 496 bytes total. The initial 64-byte capacity is exhausted quickly;
+        // the buffer doubles (64 → 128 → 256 → 512) and ends up with all
+        // 8 entries present in the right positions.
+        const v = 'y'.repeat(60);
+        for (let i = 0; i < 8; i++) {
+            const append = [];
+            append[i] = v;
+            appendAttributes(append);
+        }
+        const decoded = decodeAttrs(_currentRecordBytes());
+        for (let i = 0; i < 8; i++) {
+            assert.equal(decoded[i], v, `slot ${i}`);
+        }
+        assert.equal(decodeHeader(_currentRecordBytes()).attrsDataSize, 8 * 62);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('appendAttributes throws when there is no current context', () => {
+    assert.throws(() => appendAttributes(['v']), /no active thread context/);
+});
+
+test('appendAttributes is a no-op when given an empty array', () => {
+    runWithContext(() => {
+        const before = _currentRecordBytes();
+        appendAttributes([]);
+        const after = _currentRecordBytes();
+        assert.deepEqual(after, before);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('appendAttributes is a no-op when all slots are null/undefined', () => {
+    runWithContext(() => {
+        const before = _currentRecordBytes();
+        appendAttributes([null, undefined, , null]);
+        const after = _currentRecordBytes();
+        assert.deepEqual(after, before);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('appendAttributes throws when the combined payload would exceed 65535 bytes', () => {
+    runWithContext(() => {
+        // Fill the record to ~65000 bytes, then try to append enough to
+        // overflow.
+        const big = 'a'.repeat(255);
+        for (let chunk = 0; chunk < 252; chunk++) {
+            const a = [];
+            a[chunk % 256] = big;
+            appendAttributes(a);
+        }
+        // attrs_data_size is now 252 × 257 = 64764. Another 257-byte entry
+        // brings it to 65021 — still under the cap.
+        appendAttributes([big]);
+        // Now ~65021 bytes used. Three more 257-byte appends (~771 bytes)
+        // would push past 65535. The throw lands on whichever append first
+        // crosses the cap.
+        assert.throws(() => {
+            for (let i = 0; i < 3; i++) appendAttributes([big]);
+        }, /65535-byte attrs_data_size limit/);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('appendAttributes propagates through async continuations', async () => {
+    await runWithContext(async () => {
+        appendAttributes([, 'after-await']);
+        await Promise.resolve();
+        // After await, the same wrapper is still in the ALS, and append's
+        // effect is observable.
+        assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['before', 'after-await']);
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        attributes: ['before'],
+    });
+});
+
+test('named.appendAttributes appends by name', () => {
+    const named = makeNamedContext(['http.method', 'http.route', 'http.status']);
+    named.runWithContext(() => {
+        named.appendAttributes({ 'http.status': '500' });
+        assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['GET', '/x', '500']);
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        namedAttributes: { 'http.method': 'GET', 'http.route': '/x' },
+    });
+});
+
+test('named.appendAttributes rejects unknown names', () => {
+    const named = makeNamedContext(['known']);
+    named.runWithContext(() => {
+        assert.throws(
+            () => named.appendAttributes({ unknown: 'v' }),
+            /unknown attribute name: unknown/,
+        );
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        namedAttributes: { known: 'k' },
+    });
 });
 
 test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {

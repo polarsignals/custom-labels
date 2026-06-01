@@ -49,12 +49,33 @@ export interface ProcessContextAttributes {
 
 /**
  * Object returned by {@link makeNamedContext}. Each method mirrors the
- * top-level function of the same name, but accepts {@link NamedContextOptions}
- * (i.e. attributes by name) instead of positional.
+ * top-level function of the same name, but accepts attributes by name
+ * instead of positionally.
  */
 export interface NamedContext {
     runWithContext<T>(fn: () => T, opts: NamedContextOptions): T;
     enterWithContext(opts: NamedContextOptions): void;
+
+    /**
+     * Append attributes to the currently active thread-context record (the
+     * one a prior `runWithContext` or `enterWithContext` attached). Names
+     * are resolved to indices via the keys passed to {@link makeNamedContext}.
+     *
+     * The argument accepts the same shapes as
+     * {@link NamedContextOptions.namedAttributes}.
+     *
+     * Append-only: existing attributes are never modified. If a caller
+     * appends at a key that's already present, the OTEP "reader takes the
+     * first occurrence" rule means the new value is inert; avoid that.
+     *
+     * Throws if no context is currently attached.
+     */
+    appendAttributes(
+        namedAttributes:
+            | Record<string, unknown>
+            | Map<string, unknown>
+            | Array<[string, unknown]>,
+    ): void;
 
     /**
      * Snapshot of the OTEP-4719 process-context attributes the caller should
@@ -85,6 +106,23 @@ export function runWithContext<T>(fn: () => T, opts: ContextOptions): T;
  * On non-Linux platforms this is a no-op.
  */
 export function enterWithContext(opts: ContextOptions): void;
+
+/**
+ * Append attributes to the currently active thread-context record (the one
+ * a prior {@link runWithContext} or {@link enterWithContext} attached).
+ * Positional, same shape as {@link ContextOptions.attributes}.
+ *
+ * Append-only: existing attributes are never modified. If a caller appends
+ * at a key index that's already present, the OTEP "reader takes the first
+ * occurrence" rule means the new value is inert; avoid that.
+ *
+ * Throws if no context is currently attached.
+ *
+ * On non-Linux platforms this is a no-op.
+ */
+export function appendAttributes(
+    attributes: Array<string | null | undefined>,
+): void;
 
 /**
  * Build name-addressed wrappers around {@link runWithContext} and
