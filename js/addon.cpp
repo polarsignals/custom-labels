@@ -29,6 +29,13 @@
 //    AsyncContextFrame map (`als_handle`),
 //  - that instance's JS identity hash (`als_identity_hash`), so the reader
 //    can restrict the lookup to a single hash bucket.
+//  - the (per-isolate) tagged address of the `undefined` singleton
+//    (`undefined_addr`). After looking up the value for our ALS key in the
+//    ACF map, the reader can compare against this to skip the JSObject /
+//    internal-field-0 dereference when no CtxWrap is currently attached;
+//    without it, a reader walking through undefined would have to rely on
+//    structural validation of the bytes at undefined+wrapped_object_offset
+//    to detect the absence.
 //
 // Layout is part of the reader ABI: see the README "Discovery contract"
 // section and the static_asserts below.
@@ -43,6 +50,7 @@ struct otel_thread_ctx_nodejs_v1_t {
   v8::internal::Address *cped_slot;  // offset 0
   Global<Object> als_handle;         // offset sizeof(void*); one V8 internal pointer
   int als_identity_hash;             // offset 2 * sizeof(void*); 4 bytes + 4 bytes padding
+  v8::internal::Address undefined_addr;  // offset 3 * sizeof(void*); tagged
 };
 
 __attribute__((visibility("default")))
@@ -59,6 +67,9 @@ static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_handle) ==
 static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, als_identity_hash) ==
                   2 * sizeof(void *),
               "als_identity_hash must immediately follow als_handle");
+static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, undefined_addr) ==
+                  3 * sizeof(void *),
+              "undefined_addr must follow als_identity_hash + padding");
 
 namespace otel_thread_ctx_nodejs {
 using node::ObjectWrap;
@@ -494,6 +505,7 @@ static void ResetDiscoveryStruct(void * /*arg*/) {
   otel_thread_ctx_nodejs_v1.cped_slot = nullptr;
   otel_thread_ctx_nodejs_v1.als_handle.Reset();
   otel_thread_ctx_nodejs_v1.als_identity_hash = 0;
+  otel_thread_ctx_nodejs_v1.undefined_addr = 0;
 }
 
 void StoreAls(const FunctionCallbackInfo<Value> &args) {
@@ -510,6 +522,11 @@ void StoreAls(const FunctionCallbackInfo<Value> &args) {
   otel_thread_ctx_nodejs_v1.cped_slot = reinterpret_cast<v8::internal::Address *>(
       reinterpret_cast<char *>(isolate) +
       v8::internal::Internals::kContinuationPreservedEmbedderDataOffset);
+  // Cache the per-isolate undefined singleton's tagged address. Undefined
+  // is a read-only-roots heap object, never moves, so a cached numeric
+  // address is fine — no Global<> tracking needed.
+  otel_thread_ctx_nodejs_v1.undefined_addr =
+      reinterpret_cast<v8::internal::Address>(*v8::Undefined(isolate));
   if (!cleanup_registered) {
     node::AddEnvironmentCleanupHook(isolate, ResetDiscoveryStruct, nullptr);
     cleanup_registered = true;

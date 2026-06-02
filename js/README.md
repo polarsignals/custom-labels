@@ -248,8 +248,15 @@ The writer publishes three things the reader needs to find:
    - offset `2 * sizeof(void *)`, size `sizeof(int)` — `als_identity_hash`,
      the JS identity hash of that ALS instance. Useful for narrowing the
      search to a single hash bucket inside the `AsyncContextFrame`'s map.
+   - offset `3 * sizeof(void *)`, size `sizeof(void *)` —
+     `undefined_addr`, the per-isolate tagged address of V8's `undefined`
+     singleton. The reader compares the value it retrieves for the ALS
+     key against this *before* the internal-field-0 dereference. If equal,
+     no context is currently attached (or whatever's there isn't a
+     CtxWrap) and the reader skips. Avoids reading garbage when the slot
+     happens to hold undefined.
 
-  All three fields are fixed for a particular V8 isolate once computed.
+  All four fields are fixed for a particular V8 isolate once computed.
   Since the Node.js model is to associate an isolate with a thread in a 1:1
   fashion, this also means that the values for a particular thread are fixed
   for the lifetime of the thread and can be cached by a reader.
@@ -287,7 +294,7 @@ extract).
 
 ```cpp
 auto* ctx = read_tls<otel_thread_ctx_nodejs_v1_t>();
-if (*ctx->cped_slot == V8_UNDEFINED) return NO_CONTEXT;
+if (*ctx->cped_slot == ctx->undefined_addr) return NO_CONTEXT;
 
 // CPED -> current AsyncContextFrame (a JS Map).
 auto* acf = untag<JSMap>(*ctx->cped_slot);
@@ -311,6 +318,7 @@ auto* table = untag<OrderedHashMap>(
 uintptr_t als = *ctx->als_handle;     // dereference the Global<Object> handle
 Entry* e = find_entry(table, als, ctx->als_identity_hash);
 if (!e) return NO_CONTEXT;           // ALS not present in this ACF
+if (e->value == ctx->undefined_addr) return NO_CONTEXT;  // explicit undefined
 
 // Entry value is the JS wrapper for our CtxWrap. Internal field 0 lives
 // at offset 3 * sizeof(uintptr_t) inside the JSObject and holds the raw
