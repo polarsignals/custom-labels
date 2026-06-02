@@ -203,13 +203,18 @@ the wire. The mapping is captured once at factory time.
 names throw.
 
 `processContextAttributes` is a frozen, defensively-copied snapshot of the
-OTEP-4719 process-context attributes that correspond to this `NamedContext`'s
-keys:
+OTEP-4719 process-context attributes that correspond to this `NamedContext`:
 
 ```javascript
 {
     'threadlocal.schema_version': 'nodejs_v1',
     'threadlocal.attribute_key_map': ['http.method', 'http.route', ...],
+    // V8 layout constants captured from the V8 headers the addon was
+    // compiled against — let the reader walk our wrapper and V8's
+    // OrderedHashMap layout without having to derive these itself from
+    // pointer-compression / sandbox build flags.
+    'threadlocal.nodejs_v1.wrapped_object_offset': 24,
+    'threadlocal.nodejs_v1.tagged_size': 8,
 }
 ```
 
@@ -217,7 +222,9 @@ Spread it (or copy its entries) into whatever attribute map the application
 hands to its OTEP-4719 process-context publisher. Publishing the same
 `keys` you passed to `makeNamedContext` is the easiest way to keep the
 writer-side name-to-index mapping in sync with what an external reader
-will use to decode the on-the-wire `key_index` bytes back to names.
+will use to decode the on-the-wire `key_index` bytes back to names; the
+two `nodejs_v1.*` entries are V8 layout constants the reader needs to
+walk from our wrapper to the underlying record.
 
 ## Discovery contract (for reader implementers)
 

@@ -391,8 +391,7 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value> &args) {
     return;
   }
 
-  // Doesn't fit. Reallocate with geometric growth, capped at the 65535
-  // hard cap.
+  // Doesn't fit. Reallocate with geometric growth with cap.
   size_t new_cap = self->capacity_ * 2;
   if (new_cap < new_used) new_cap = new_used;
   if (new_cap > MAX_ATTRS_DATA_SIZE) new_cap = MAX_ATTRS_DATA_SIZE;
@@ -464,22 +463,22 @@ void CtxWrap::Init(Local<Object> exports) {
   Local<Context> context = isolate->GetCurrentContext();
 
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
-  tpl->SetClassName(String::NewFromUtf8(isolate, "CtxWrap").ToLocalChecked());
+  tpl->SetClassName(String::NewFromUtf8Literal(isolate, "CtxWrap"));
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
   tpl->PrototypeTemplate()->Set(
-      String::NewFromUtf8(isolate, "bytes").ToLocalChecked(),
+      String::NewFromUtf8Literal(isolate, "bytes"),
       FunctionTemplate::New(isolate, Bytes));
   tpl->PrototypeTemplate()->Set(
-      String::NewFromUtf8(isolate, "append").ToLocalChecked(),
+      String::NewFromUtf8Literal(isolate, "append"),
       FunctionTemplate::New(isolate, Append));
   tpl->PrototypeTemplate()->Set(
-      String::NewFromUtf8(isolate, "isTruncated").ToLocalChecked(),
+      String::NewFromUtf8Literal(isolate, "isTruncated"),
       FunctionTemplate::New(isolate, IsTruncated));
 
   Local<Function> constructor = tpl->GetFunction(context).ToLocalChecked();
   exports
-      ->Set(context, String::NewFromUtf8(isolate, "CtxWrap").ToLocalChecked(),
+      ->Set(context, String::NewFromUtf8Literal(isolate, "CtxWrap"),
             constructor)
       .FromJust();
 }
@@ -530,10 +529,43 @@ void GetStoredAlsHash(const FunctionCallbackInfo<Value> &args) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
+// V8 layout constants captured at addon-compile time from the same V8
+// headers Node bundles. Published via the discovery contract so an
+// out-of-process reader can decode our wrapper / V8's internal hashmap
+// layout without doing its own V8-internal-symbol lookups for the
+// pointer-compression / sandbox state.
+//
+// `wrapped_object_offset` is the byte offset within a JSObject where
+// internal field 0 lives — the slot we set via SetAlignedPointerInInternalField
+// and the reader extracts to get the C++ CtxWrap pointer. It depends on
+// V8's pointer-compression and sandbox build flags (kJSObjectHeaderSize
+// = 3 * kApiTaggedSize, plus the embedder-data-slot external-pointer
+// offset of either 0 or kApiTaggedSize depending on V8_ENABLE_SANDBOX).
+//
+// `tagged_size` is V8's tagged pointer width (4 with pointer compression,
+// 8 without). Together these are sufficient to derive every other V8
+// layout offset our discovery contract relies on.
+constexpr int WRAPPED_OBJECT_OFFSET =
+    v8::internal::Internals::kJSObjectHeaderSize +
+    v8::internal::Internals::kEmbedderDataSlotExternalPointerOffset;
+constexpr int TAGGED_SIZE = v8::internal::kApiTaggedSize;
+
 NODE_MODULE_INIT() {
   CtxWrap::Init(exports);
   NODE_SET_METHOD(exports, "storeAls", StoreAls);
   NODE_SET_METHOD(exports, "getStoredAlsHash", GetStoredAlsHash);
+
+  Isolate *isolate = exports->GetIsolate();
+  exports
+      ->Set(context,
+            String::NewFromUtf8Literal(isolate, "wrappedObjectOffset"),
+            Integer::New(isolate, WRAPPED_OBJECT_OFFSET))
+      .FromJust();
+  exports
+      ->Set(context,
+            String::NewFromUtf8Literal(isolate, "taggedSize"),
+            Integer::New(isolate, TAGGED_SIZE))
+      .FromJust();
 }
 
 #pragma GCC diagnostic pop

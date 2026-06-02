@@ -45,6 +45,22 @@ export interface NamedContextOptions {
 export interface ProcessContextAttributes {
     readonly 'threadlocal.schema_version': 'nodejs_v1';
     readonly 'threadlocal.attribute_key_map': readonly string[];
+
+    /**
+     * Byte offset within a V8 JSObject where internal field 0 lives — the
+     * slot the addon sets via `SetAlignedPointerInInternalField` and that
+     * the reader dereferences to recover the C++ wrapper pointer. Captured
+     * from the V8 headers at addon-compile time so the reader doesn't have
+     * to derive it from V8's pointer-compression / sandbox build flags.
+     */
+    readonly 'threadlocal.nodejs_v1.wrapped_object_offset': number;
+
+    /**
+     * V8's tagged-pointer width in bytes (4 with pointer compression, 8
+     * without). The reader can use this to derive the JSMap-, FixedArray-,
+     * and OrderedHashMap-header offsets it walks without hardcoding them.
+     */
+    readonly 'threadlocal.nodejs_v1.tagged_size': number;
 }
 
 /**

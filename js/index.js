@@ -5,10 +5,20 @@ let isContextTruncated;
 
 const SCHEMA_VERSION = 'nodejs_v1';
 
+// V8 layout constants the addon captured from the V8 headers Node bundles.
+// On non-Linux these fall back to the values matching Node's standard
+// build (no V8 pointer compression, no sandbox) — the reader is Linux-only
+// per the OTEP anyway, so non-Linux callers republishing process context
+// see consistent values.
+let WRAPPED_OBJECT_OFFSET = 24;
+let TAGGED_SIZE = 8;
+
 if (process.platform === 'linux') {
     const bindings = require('bindings');
 
     const addon = bindings('customlabels');
+    WRAPPED_OBJECT_OFFSET = addon.wrappedObjectOffset;
+    TAGGED_SIZE = addon.taggedSize;
 
     const { AsyncLocalStorage } = require('node:async_hooks');
     let als = undefined;
@@ -149,12 +159,15 @@ function makeNamedContext(keys) {
     }
 
     // Snapshot of the OTEP-4719 process-context attributes the caller should
-    // publish to keep the names this NamedContext resolves against in sync
-    // with what an out-of-process reader sees. Frozen + defensively copied
-    // so the caller can't mutate it back into our internal state.
+    // publish so an out-of-process reader can (a) decode key indices back to
+    // names and (b) walk V8's wrapper/hashmap layout without doing its own
+    // V8-internal symbol lookups. Frozen + defensively copied so the caller
+    // can't mutate it back into our internal state.
     const processContextAttributes = Object.freeze({
         'threadlocal.schema_version': SCHEMA_VERSION,
         'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
+        'threadlocal.nodejs_v1.wrapped_object_offset': WRAPPED_OBJECT_OFFSET,
+        'threadlocal.nodejs_v1.tagged_size': TAGGED_SIZE,
     });
 
     return {

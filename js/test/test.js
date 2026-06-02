@@ -400,10 +400,19 @@ test('makeNamedContext returns an object with both methods', () => {
 test('makeNamedContext exposes processContextAttributes matching the input keys', () => {
     const keys = ['http.method', 'http.route', 'user.id'];
     const named = makeNamedContext(keys);
-    assert.deepEqual(named.processContextAttributes, {
-        'threadlocal.schema_version': 'nodejs_v1',
-        'threadlocal.attribute_key_map': keys,
-    });
+    const pca = named.processContextAttributes;
+    assert.equal(pca['threadlocal.schema_version'], 'nodejs_v1');
+    assert.deepEqual(pca['threadlocal.attribute_key_map'], keys);
+    // V8 layout constants — on Node's standard build (no pointer
+    // compression, no sandbox) these are 24 and 8 respectively.
+    assert.equal(pca['threadlocal.nodejs_v1.wrapped_object_offset'], 24);
+    assert.equal(pca['threadlocal.nodejs_v1.tagged_size'], 8);
+    assert.deepEqual(Object.keys(pca).sort(), [
+        'threadlocal.attribute_key_map',
+        'threadlocal.nodejs_v1.tagged_size',
+        'threadlocal.nodejs_v1.wrapped_object_offset',
+        'threadlocal.schema_version',
+    ]);
 });
 
 test('processContextAttributes is frozen and a defensive copy', () => {
