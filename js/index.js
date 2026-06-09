@@ -1,5 +1,6 @@
 let runWithContext;
 let enterWithContext;
+let clearContext;
 let appendAttributes;
 let isContextTruncated;
 
@@ -73,6 +74,13 @@ if (process.platform === 'linux') {
         als.enterWith(wrap);
     };
 
+    clearContext = function () {
+        // Idempotent: clearing when no hook has been installed yet (and
+        // therefore no context can be active) is a no-op.
+        if (!als) return;
+        als.enterWith(undefined);
+    };
+
     appendAttributes = function (attributes) {
         if (!als) {
             throw new Error('no active thread context; call runWithContext or enterWithContext first');
@@ -102,6 +110,7 @@ if (process.platform === 'linux') {
 } else {
     runWithContext = function (fn, _opts) { return fn(); };
     enterWithContext = function (_opts) {};
+    clearContext = function () {};
     appendAttributes = function (_attributes) {};
     isContextTruncated = function () { return false; };
     exports._currentRecordBytes = function () { return undefined; };
@@ -177,6 +186,9 @@ function makeNamedContext(keys) {
         enterWithContext(opts) {
             enterWithContext(toBaseOpts(opts));
         },
+        clearContext() {
+            clearContext();
+        },
         appendAttributes(namedAttributes) {
             appendAttributes(resolveAttributes(namedAttributes));
         },
@@ -189,6 +201,7 @@ function makeNamedContext(keys) {
 
 exports.runWithContext = runWithContext;
 exports.enterWithContext = enterWithContext;
+exports.clearContext = clearContext;
 exports.appendAttributes = appendAttributes;
 exports.isContextTruncated = isContextTruncated;
 exports.makeNamedContext = makeNamedContext;

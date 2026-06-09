@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const lib = require('..');
-const { runWithContext, enterWithContext, appendAttributes, isContextTruncated, makeNamedContext, _currentRecordBytes } = lib;
+const { runWithContext, enterWithContext, clearContext, appendAttributes, isContextTruncated, makeNamedContext, _currentRecordBytes } = lib;
 
 const TRACE_ID_BYTES = bytesFromHex('0102030405060708090a0b0c0d0e0f10');
 const SPAN_ID_BYTES  = bytesFromHex('1112131415161718');
@@ -443,6 +443,68 @@ test('named.enterWithContext attaches a name-addressed record', () => {
         });
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['/x']);
     }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('clearContext detaches the active record within a scope', () => {
+    runWithContext(() => {
+        assert.ok(_currentRecordBytes());
+        clearContext();
+        assert.equal(_currentRecordBytes(), undefined);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('after clearContext, appendAttributes throws and isContextTruncated is false', () => {
+    runWithContext(() => {
+        clearContext();
+        assert.throws(() => appendAttributes(['v']), /no active thread context/);
+        assert.equal(isContextTruncated(), false);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('clearContext is idempotent (calling twice or with no context is a no-op)', () => {
+    // Outside any context — should not throw.
+    clearContext();
+    assert.equal(_currentRecordBytes(), undefined);
+    runWithContext(() => {
+        clearContext();
+        clearContext();
+        assert.equal(_currentRecordBytes(), undefined);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('runWithContext re-establishes a record after a clearContext', () => {
+    runWithContext(() => {
+        clearContext();
+        const innerSpan = bytesFromHex('aabbccddeeff0011');
+        runWithContext(() => {
+            assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, innerSpan);
+        }, { traceId: TRACE_ID_BYTES, spanId: innerSpan });
+        // After the inner runWithContext returns, we're back to the
+        // post-clear state in the outer scope: no active record.
+        assert.equal(_currentRecordBytes(), undefined);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('enterWithContext re-establishes a record after a clearContext', () => {
+    runWithContext(() => {
+        clearContext();
+        const newSpan = bytesFromHex('aabbccddeeff0011');
+        enterWithContext({ traceId: TRACE_ID_BYTES, spanId: newSpan });
+        assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, newSpan);
+    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+});
+
+test('named.clearContext detaches the active record', () => {
+    const named = makeNamedContext(['route']);
+    named.runWithContext(() => {
+        assert.ok(_currentRecordBytes());
+        named.clearContext();
+        assert.equal(_currentRecordBytes(), undefined);
+    }, {
+        traceId: TRACE_ID_BYTES,
+        spanId:  SPAN_ID_BYTES,
+        namedAttributes: { route: '/x' },
+    });
 });
 
 test('appendAttributes adds entries to the current record', () => {

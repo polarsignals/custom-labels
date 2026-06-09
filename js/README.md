@@ -141,6 +141,20 @@ chain.
 
 `opts` is the same as for `runWithContext`. Returns nothing.
 
+### `clearContext()`
+
+Detach any thread-context record from the current asynchronous scope.
+Subsequent reads in the same scope (until a new `runWithContext` or
+`enterWithContext` attaches one) see no active context. Implemented as
+`AsyncLocalStorage.enterWith(undefined)`, which is the reason the
+discovery struct publishes the per-isolate `undefined_addr` — readers
+compare the value retrieved for our ALS key against it and bail cleanly
+when this method has been called.
+
+Idempotent: calling when there is no active context is a no-op. Useful,
+for instance, when a tracing span ends but the surrounding async
+context lives on for unrelated work.
+
 ### `appendAttributes(attributes)`
 
 Append attributes to the active thread-context record without otherwise
@@ -187,12 +201,13 @@ Returns `false` if there is no active context and on non-Linux platforms.
 
 ### `makeNamedContext(keys)`
 
-Returns an object `{ runWithContext, enterWithContext, appendAttributes,
-isContextTruncated, processContextAttributes }`. The first three methods
-are the name-addressed counterparts of the top-level functions of the same
-name (they accept attributes by name instead of by position);
-`isContextTruncated` is just a passthrough to the top-level function of
-the same name, exposed on the named-context object for API symmetry. The
+Returns an object `{ runWithContext, enterWithContext, clearContext,
+appendAttributes, isContextTruncated, processContextAttributes }`. The
+first four methods are the name-addressed counterparts of the top-level
+functions of the same name (those that accept attributes do so by name
+instead of by position); `clearContext` and `isContextTruncated` are
+passthroughs to the same-named top-level functions, exposed on the
+named-context object for API symmetry. The
 `keys` array is the same string list the caller publishes (or has
 published) as the `threadlocal.attribute_key_map` resource attribute in
 the OTEP-4719 process context: index N in `keys` is uint8 key index N on

@@ -73,6 +73,13 @@ export interface NamedContext {
     enterWithContext(opts: NamedContextOptions): void;
 
     /**
+     * Same as the top-level {@link clearContext}, exposed on the named
+     * context for API symmetry. Detaches any thread-context record from
+     * the current asynchronous scope.
+     */
+    clearContext(): void;
+
+    /**
      * Append attributes to the currently active thread-context record (the
      * one a prior `runWithContext` or `enterWithContext` attached). Names
      * are resolved to indices via the keys passed to {@link makeNamedContext}.
@@ -136,6 +143,19 @@ export function runWithContext<T>(fn: () => T, opts: ContextOptions): T;
  * On non-Linux platforms this is a no-op.
  */
 export function enterWithContext(opts: ContextOptions): void;
+
+/**
+ * Detach any thread-context record from the current asynchronous scope.
+ * Subsequent reads in the same scope (until a new
+ * {@link runWithContext}/{@link enterWithContext} attaches one) see no
+ * active context. Useful, for instance, when a tracing span ends but the
+ * surrounding async context lives on for unrelated work.
+ *
+ * Idempotent: calling when there is no active context is a no-op.
+ *
+ * On non-Linux platforms this is a no-op.
+ */
+export function clearContext(): void;
 
 /**
  * Append attributes to the currently active thread-context record (the one
