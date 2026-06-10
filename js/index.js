@@ -105,7 +105,7 @@ if (process.platform === 'linux') {
         if (!als) return undefined;
         const wrap = als.getStore();
         if (!wrap) return undefined;
-        return wrap.bytes();
+        return wrap.debugBytes();
     };
 } else {
     runWithContext = function (fn, _opts) { return fn(); };

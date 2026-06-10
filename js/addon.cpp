@@ -153,7 +153,7 @@ class CtxWrap : public ObjectWrap {
 
  private:
   static void New(const FunctionCallbackInfo<Value> &args);
-  static void Bytes(const FunctionCallbackInfo<Value> &args);
+  static void DebugBytes(const FunctionCallbackInfo<Value> &args);
   static void Append(const FunctionCallbackInfo<Value> &args);
   static void IsTruncated(const FunctionCallbackInfo<Value> &args);
 
@@ -473,7 +473,7 @@ void CtxWrap::IsTruncated(const FunctionCallbackInfo<Value> &args) {
 // Debug accessor: returns the record (header + attrs_data) as a fresh
 // Uint8Array sized to the actual on-the-wire length. Not part of the stable
 // API; intended for tests and out-of-process-reader development.
-void CtxWrap::Bytes(const FunctionCallbackInfo<Value> &args) {
+void CtxWrap::DebugBytes(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
   CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
   if (!self) {
@@ -500,8 +500,8 @@ void CtxWrap::Init(Local<Object> exports) {
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
   tpl->PrototypeTemplate()->Set(
-      String::NewFromUtf8Literal(isolate, "bytes"),
-      FunctionTemplate::New(isolate, Bytes));
+      String::NewFromUtf8Literal(isolate, "debugBytes"),
+      FunctionTemplate::New(isolate, DebugBytes));
   tpl->PrototypeTemplate()->Set(
       String::NewFromUtf8Literal(isolate, "append"),
       FunctionTemplate::New(isolate, Append));
