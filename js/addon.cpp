@@ -50,7 +50,12 @@ struct otel_thread_ctx_nodejs_v1_t {
   v8::internal::Address undefined_addr;  // offset 3 * sizeof(void*); tagged
 };
 
+// MSVC doesn't understand __attribute__; visibility is irrelevant on
+// Windows anyway since the OTEP-4947 reader contract is ELF-TLSDESC and
+// only meaningful on Linux.
+#if defined(__GNUC__) || defined(__clang__)
 __attribute__((visibility("default")))
+#endif
 thread_local otel_thread_ctx_nodejs_v1_t otel_thread_ctx_nodejs_v1;
 }
 
