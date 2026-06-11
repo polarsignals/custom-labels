@@ -258,7 +258,11 @@ bool CtxWrap::EncodeAttrs(Isolate *isolate, Local<Context> context,
 
     Local<String> v;
     if (!val_val->ToString(context).ToLocal(&v)) return false;
+#if NODE_MAJOR_VERSION >= 24
+    int v_utf8_len = static_cast<int>(v->Utf8LengthV2(isolate));
+#else
     int v_utf8_len = v->Utf8Length(isolate);
+#endif
     // The on-the-wire val_len prefix is a uint8, so individual values
     // longer than 255 UTF-8 bytes are silently truncated to 255.
     int v_budget = v_utf8_len > 255 ? 255 : v_utf8_len;
@@ -280,9 +284,15 @@ bool CtxWrap::EncodeAttrs(Isolate *isolate, Local<Context> context,
     // — WriteUtf8 stops before writing a partial sequence. Use that count
     // as the length prefix, and shrink the buffer back so the next entry
     // starts at exactly the right offset.
+#if NODE_MAJOR_VERSION >= 24
+    int v_written = static_cast<int>(v->WriteUtf8V2(
+        isolate, reinterpret_cast<char *>(&(*out)[entry_off + 2]),
+        static_cast<size_t>(v_budget), String::WriteFlags::kNone));
+#else
     int v_written = v->WriteUtf8(
         isolate, reinterpret_cast<char *>(&(*out)[entry_off + 2]), v_budget,
         nullptr, String::NO_NULL_TERMINATION);
+#endif
     (*out)[entry_off + 1] = static_cast<uint8_t>(v_written);
     if (v_written < v_budget) {
       out->resize(entry_off + 2u + static_cast<size_t>(v_written));
@@ -485,11 +495,7 @@ void CtxWrap::DebugBytes(const FunctionCallbackInfo<Value> &args) {
 }
 
 void CtxWrap::Init(Local<Object> exports) {
-#if NODE_MAJOR_VERSION >= 26
   Isolate *isolate = Isolate::GetCurrent();
-#else
-  Isolate *isolate = exports->GetIsolate();
-#endif
   Local<Context> context = isolate->GetCurrentContext();
 
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
@@ -609,7 +615,7 @@ NODE_MODULE_INIT() {
   NODE_SET_METHOD(exports, "storeAls", StoreAls);
   NODE_SET_METHOD(exports, "getStoredAlsHash", GetStoredAlsHash);
 
-  Isolate *isolate = exports->GetIsolate();
+  Isolate *isolate = Isolate::GetCurrent();
   exports
       ->Set(context,
             String::NewFromUtf8Literal(isolate, "wrappedObjectOffset"),
