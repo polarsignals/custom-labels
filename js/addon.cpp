@@ -218,7 +218,7 @@ static bool CopyBytes(Local<Value> value, size_t expected_bytes, uint8_t *out) {
   if (!value->IsUint8Array()) return false;
   Local<Uint8Array> arr = value.As<Uint8Array>();
   if (arr->ByteLength() != expected_bytes) return false;
-  uint8_t *base = static_cast<uint8_t *>(arr->Buffer()->Data()) +
+  uint8_t *base = static_cast<uint8_t *>(arr->Buffer()->GetBackingStore()->Data()) +
                   arr->ByteOffset();
   memcpy(out, base, expected_bytes);
   return true;
@@ -480,7 +480,7 @@ void CtxWrap::DebugBytes(const FunctionCallbackInfo<Value> &args) {
   const size_t total =
       sizeof(OtelThreadCtxRecord) + self->record_->attrs_data_size;
   Local<v8::ArrayBuffer> buf = v8::ArrayBuffer::New(isolate, total);
-  memcpy(buf->Data(), self->record_, total);
+  memcpy(buf->GetBackingStore()->Data(), self->record_, total);
   args.GetReturnValue().Set(Uint8Array::New(buf, 0, total));
 }
 
@@ -590,9 +590,18 @@ void GetStoredAlsHash(const FunctionCallbackInfo<Value> &args) {
 // `tagged_size` is V8's tagged pointer width (4 with pointer compression,
 // 8 without). Together these are sufficient to derive every other V8
 // layout offset our discovery contract relies on.
+#if NODE_MAJOR_VERSION >= 22
 constexpr int WRAPPED_OBJECT_OFFSET =
     v8::internal::Internals::kJSObjectHeaderSize +
     v8::internal::Internals::kEmbedderDataSlotExternalPointerOffset;
+#else
+// Node < 22 lacks kEmbedderDataSlotExternalPointerOffset. The discovery
+// contract isn't usable on these versions (no ContinuationPreservedEmbedderData
+// either — see storeAls), so this value is published only to keep the
+// addon's exported surface consistent across Node majors. A would-be
+// reader cannot reach a live record through it.
+constexpr int WRAPPED_OBJECT_OFFSET = 0;
+#endif
 constexpr int TAGGED_SIZE = v8::internal::kApiTaggedSize;
 
 NODE_MODULE_INIT() {
