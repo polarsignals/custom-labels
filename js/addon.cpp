@@ -257,10 +257,7 @@ bool CtxWrap::EncodeAttrs(Isolate *isolate, Local<Context> context,
     if (val_val->IsUndefined() || val_val->IsNull()) continue;
 
     Local<String> v;
-    if (!val_val->ToString(context).ToLocal(&v)) {
-      isolate->ThrowError("failed to coerce attribute value to string");
-      return false;
-    }
+    if (!val_val->ToString(context).ToLocal(&v)) return false;
     int v_utf8_len = v->Utf8Length(isolate);
     // The on-the-wire val_len prefix is a uint8, so individual values
     // longer than 255 UTF-8 bytes are silently truncated to 255.
