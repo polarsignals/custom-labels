@@ -8,6 +8,28 @@ if (process.platform !== 'linux') {
     return;
 }
 
+// AsyncContextFrame (the writer's discovery substrate) is opt-in on Node
+// 22/23 (via --experimental-async-context-frame), on by default in Node
+// 24+ (disable-able via --no-async-context-frame), and absent on Node <
+// 22. The "test" npm script supplies the flag, but a direct `node
+// test/test.js` invocation without it would have every test fail noisily
+// — bail cleanly instead.
+function isAsyncContextFrameAvailable() {
+    if (process.execArgv.includes('--no-async-context-frame')) return false;
+    const major = Number(process.versions.node.split('.')[0]);
+    if (major >= 24) return true;
+    if (major >= 22) {
+        return process.execArgv.includes('--experimental-async-context-frame');
+    }
+    return false;
+}
+
+if (!isAsyncContextFrameAvailable()) {
+    console.log('Skipping native tests: AsyncContextFrame is unavailable on this Node. ' +
+                'Use Node 24+ or launch with --experimental-async-context-frame on Node 22/23.');
+    return;
+}
+
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -683,6 +705,10 @@ test('named.appendAttributes rejects unknown names', () => {
 
 test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {
     const addon = path.join(__dirname, '..', 'build', 'Release', 'customlabels.node');
+    if (!require('node:fs').existsSync(addon)) {
+        t.skip(`addon binary not found at ${addon}`);
+        return;
+    }
     const r = spawnSync('readelf', ['--dyn-syms', '--wide', addon], { encoding: 'utf8' });
     if (r.error && r.error.code === 'ENOENT') {
         assert.fail('readelf not available (install binutils to run this test)');
