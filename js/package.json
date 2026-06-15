@@ -1,28 +1,23 @@
 {
-    "name": "@polarsignals/custom-labels",
-    "version": "0.3.9",
-    "description": "test",
+    "name": "@opentelemetry/thread-context-wip",
+    "version": "0.1.0",
+    "description": "Node.js writer for the OpenTelemetry thread-context record (OTEP-4947), discoverable via AsyncLocalStorage / AsyncContextFrame.",
     "main": "index.js",
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1",
-        "install": "node build.js",
-        "prepare": "cp -R ../src native"
+        "test": "node --experimental-async-context-frame --disable-warning=ExperimentalWarning --test test/test.js",
+        "test:docker": "./test/run-in-docker.sh",
+        "install": "node build.js"
     },
     "author": "",
     "license": "Apache-2.0",
     "gypfile": true,
     "type": "cjs",
     "files": [
-        "*.c",
-        "*.cpp",
-        "*.h",
-        "*.js",
-        "*.ts",
-        "native/*.h",
-        "native/*.c",
-        "native/*.cpp",
+        "addon.cpp",
         "binding.gyp",
-        "build.js"
+        "build.js",
+        "index.d.ts",
+        "index.js"
     ],
     "dependencies": {
         "bindings": "^1.5.0",

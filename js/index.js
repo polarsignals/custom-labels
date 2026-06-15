@@ -1,12 +1,25 @@
-let withLabels;
-let curLabels;
+let runWithContext;
+let enterWithContext;
+let clearContext;
+let appendAttributes;
+let isContextTruncated;
 
-let hook;
+const SCHEMA_VERSION = 'nodejs_v1';
 
-if (process.platform == 'linux') {
+// V8 layout constants the addon captured from the V8 headers Node bundles.
+// On non-Linux these fall back to the values matching Node's standard
+// build (no V8 pointer compression, no sandbox) — the reader is Linux-only
+// per the OTEP anyway, so non-Linux callers republishing process context
+// see consistent values.
+let WRAPPED_OBJECT_OFFSET = 24;
+let TAGGED_SIZE = 8;
+
+if (process.platform === 'linux') {
     const bindings = require('bindings');
 
     const addon = bindings('customlabels');
+    WRAPPED_OBJECT_OFFSET = addon.wrappedObjectOffset;
+    TAGGED_SIZE = addon.taggedSize;
 
     const { AsyncLocalStorage } = require('node:async_hooks');
     let als = undefined;
@@ -27,37 +40,168 @@ if (process.platform == 'linux') {
         // Older versions: not available.
         return "Node major versions prior to v22 do not support the feature at all";
     }
-    
+
     function ensureHook() {
         if (als)
             return;
         const err = asyncContextFrameError();
         if (err) {
-            throw new Error(`Custom labels requires async_context_frame support, which is unavailable: ${err}.`);
+            throw new Error(`otel thread-ctx writer requires async_context_frame support, which is unavailable: ${err}.`);
         }
         als = new AsyncLocalStorage();
-        addon.storeHash(als);
+        addon.storeAls(als);
     }
 
-    curLabels = function() {
+    function buildWrap(opts) {
+        if (!opts || typeof opts !== 'object') {
+            throw new TypeError('options object required');
+        }
         ensureHook();
+        return new addon.CtxWrap(
+            opts.traceId,
+            opts.spanId,
+            opts.attributes,
+        );
+    }
 
-        return als.getStore();
+    runWithContext = function (fn, opts) {
+        const wrap = buildWrap(opts);
+        return als.run(wrap, fn);
     };
-    
-    withLabels = function(f, ...kvs) {
-        ensureHook();
-        const curs = curLabels();
-        const newLabels = new addon.ClWrap(curs, ...kvs);
-        return als.run(newLabels, f);
+
+    enterWithContext = function (opts) {
+        const wrap = buildWrap(opts);
+        als.enterWith(wrap);
+    };
+
+    clearContext = function () {
+        // Idempotent: clearing when no hook has been installed yet (and
+        // therefore no context can be active) is a no-op.
+        if (!als) return;
+        als.enterWith(undefined);
+    };
+
+    appendAttributes = function (attributes) {
+        if (!als) {
+            throw new Error('no active thread context; call runWithContext or enterWithContext first');
+        }
+        const wrap = als.getStore();
+        if (!wrap) {
+            throw new Error('no active thread context; call runWithContext or enterWithContext first');
+        }
+        wrap.append(attributes);
+    };
+
+    isContextTruncated = function () {
+        if (!als) return false;
+        const wrap = als.getStore();
+        if (!wrap) return false;
+        return wrap.isTruncated();
+    };
+
+    // Debug accessor (not part of the stable API; for tests / reader dev):
+    // returns a Uint8Array view of the currently attached record, or undefined.
+    exports._currentRecordBytes = function () {
+        if (!als) return undefined;
+        const wrap = als.getStore();
+        if (!wrap) return undefined;
+        return wrap.debugBytes();
     };
 } else {
-    withLabels = function(f, ...kvs) {
-        return f();
-    };
-
-    curLabels = function() { return undefined; };
+    runWithContext = function (fn, _opts) { return fn(); };
+    enterWithContext = function (_opts) {};
+    clearContext = function () {};
+    appendAttributes = function (_attributes) {};
+    isContextTruncated = function () { return false; };
+    exports._currentRecordBytes = function () { return undefined; };
 }
 
-exports.withLabels = withLabels;
-exports.curLabels = curLabels;
+function makeNamedContext(keys) {
+    if (!Array.isArray(keys)) {
+        throw new TypeError('keys must be an array of attribute names');
+    }
+    if (keys.length > 256) {
+        throw new RangeError('keys array exceeds 256 entries');
+    }
+    const indexByName = new Map();
+    keys.forEach((name, i) => {
+        if (typeof name !== 'string') {
+            throw new TypeError('every key must be a string');
+        }
+        if (indexByName.has(name)) {
+            throw new Error(`duplicate key name at indexes ${indexByName.get(name)} and ${i}: ${name}`);
+        }
+        indexByName.set(name, i);
+    });
+
+    function resolveAttributes(named) {
+        if (named == null) return undefined;
+        const attributes = [];
+        const set = (name, value) => {
+            const idx = indexByName.get(name);
+            if (idx === undefined) {
+                throw new Error(`unknown attribute name: ${name}`);
+            }
+            attributes[idx] = String(value);
+        };
+        if (Array.isArray(named)) {
+            for (const [n, v] of named) set(n, v);
+        } else if (named instanceof Map) {
+            for (const [n, v] of named) set(n, v);
+        } else if (typeof named === 'object') {
+            for (const n of Object.keys(named)) set(n, named[n]);
+        } else {
+            throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
+        }
+        return attributes;
+    }
+
+    function toBaseOpts(opts) {
+        if (!opts || typeof opts !== 'object') {
+            throw new TypeError('options object required');
+        }
+        return {
+            traceId: opts.traceId,
+            spanId: opts.spanId,
+            attributes: resolveAttributes(opts.namedAttributes),
+        };
+    }
+
+    // Snapshot of the OTEP-4719 process-context attributes the caller should
+    // publish so an out-of-process reader can (a) decode key indices back to
+    // names and (b) walk V8's wrapper/hashmap layout without doing its own
+    // V8-internal symbol lookups. Frozen + defensively copied so the caller
+    // can't mutate it back into our internal state.
+    const processContextAttributes = Object.freeze({
+        'threadlocal.schema_version': SCHEMA_VERSION,
+        'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
+        'threadlocal.nodejs_v1.wrapped_object_offset': WRAPPED_OBJECT_OFFSET,
+        'threadlocal.nodejs_v1.tagged_size': TAGGED_SIZE,
+    });
+
+    return {
+        runWithContext(fn, opts) {
+            return runWithContext(fn, toBaseOpts(opts));
+        },
+        enterWithContext(opts) {
+            enterWithContext(toBaseOpts(opts));
+        },
+        clearContext() {
+            clearContext();
+        },
+        appendAttributes(namedAttributes) {
+            appendAttributes(resolveAttributes(namedAttributes));
+        },
+        isContextTruncated() {
+            return isContextTruncated();
+        },
+        processContextAttributes,
+    };
+}
+
+exports.runWithContext = runWithContext;
+exports.enterWithContext = enterWithContext;
+exports.clearContext = clearContext;
+exports.appendAttributes = appendAttributes;
+exports.isContextTruncated = isContextTruncated;
+exports.makeNamedContext = makeNamedContext;
