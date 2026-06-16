@@ -1,11 +1,5 @@
 'use strict';
 
-let runWithContext;
-let enterWithContext;
-let clearContext;
-let appendAttributes;
-let isContextTruncated;
-
 const SCHEMA_VERSION = 'nodejs_v1';
 
 // V8 layout constants the addon captured from the V8 headers Node bundles.
@@ -16,18 +10,26 @@ const SCHEMA_VERSION = 'nodejs_v1';
 let WRAPPED_OBJECT_OFFSET = 24;
 let TAGGED_SIZE = 8;
 
+// Public surface, populated by the Linux branch below. On other
+// platforms these stay as no-op stubs / a sham class.
+let ThreadContext;
+let getContext;
+let clearContext;
+
 if (process.platform === 'linux') {
     const bindings = require('bindings');
     const addon = bindings('customlabels');
     WRAPPED_OBJECT_OFFSET = addon.wrappedObjectOffset;
     TAGGED_SIZE = addon.taggedSize;
 
+    ThreadContext = addon.ThreadContext;
+
     const { AsyncLocalStorage } = require('node:async_hooks');
     let als;
 
     function asyncContextFrameError() {
         const [major] = process.versions.node.split('.').map(Number);
-        // If explicitly disabled, it's not in use.
+        // Explicit opt-out: it's not in use.
         if (process.execArgv.includes('--no-async-context-frame')) return 'Node explicitly launched with --no-async-context-frame';
         // Since Node 24, AsyncContextFrame is the default unless disabled.
         if (major >= 24) return undefined;
@@ -48,70 +50,64 @@ if (process.platform === 'linux') {
         addon.storeAls(als);
     }
 
-    function buildWrap(opts) {
-        if (!opts || typeof opts !== 'object') {
-            throw new TypeError('options object required');
-        }
-        ensureHook();
-        return new addon.ThreadContext(
-            opts.traceId,
-            opts.spanId,
-            opts.attributes,
-        );
-    }
-
-    runWithContext = function (fn, opts) {
-        const wrap = buildWrap(opts);
-        return als.run(wrap, fn);
+    getContext = function () {
+        return als ? als.getStore() : undefined;
     };
 
-    enterWithContext = function (opts) {
-        const wrap = buildWrap(opts);
-        als.enterWith(wrap);
-    };
-
+    // Idempotent: clearing when the hook hasn't been installed (no prior
+    // enter / run on a ThreadContext) is a no-op.
     clearContext = function () {
-        // Idempotent: clearing when no hook has been installed yet (and
-        // therefore no context can be active) is a no-op.
         if (!als) return;
         als.enterWith(undefined);
     };
 
-    appendAttributes = function (attributes) {
-        if (!als) {
-            throw new Error('no active thread context; call runWithContext or enterWithContext first');
-        }
-        const wrap = als.getStore();
-        if (!wrap) {
-            throw new Error('no active thread context; call runWithContext or enterWithContext first');
-        }
-        wrap.appendAttributes(attributes);
+    // Install the active-context channel on the ThreadContext prototype so
+    // the only way to push a ThreadContext into our AsyncLocalStorage is
+    // via the context itself — callers can't poison the ALS with an
+    // arbitrary object.
+    ThreadContext.prototype.enter = function () {
+        ensureHook();
+        als.enterWith(this);
     };
-
-    isContextTruncated = function () {
-        if (!als) return false;
-        const wrap = als.getStore();
-        if (!wrap) return false;
-        return wrap.isTruncated();
+    ThreadContext.prototype.run = function (fn) {
+        ensureHook();
+        return als.run(this, fn);
     };
 
     // Debug accessor (not part of the stable API; for tests / reader dev):
     // returns a Uint8Array view of the currently attached record, or undefined.
     exports._currentRecordBytes = function () {
-        if (!als) return undefined;
-        const wrap = als.getStore();
-        if (!wrap) return undefined;
-        return wrap.debugBytes();
+        const c = getContext();
+        return c ? c.debugBytes() : undefined;
     };
 } else {
-    runWithContext = function (fn, _opts) { return fn(); };
-    enterWithContext = function (_opts) {};
+    // Non-Linux degradation. The writer's reader contract is ELF-TLSDESC,
+    // meaningful only on Linux; on other platforms we still want the API
+    // to be callable so consumers don't have to gate every call site —
+    // construction succeeds but produces an inert context, and the
+    // enter/run/clearContext entry points don't wire anything into
+    // AsyncLocalStorage.
+    class NoopThreadContext {
+        appendAttributes() {}
+        isTruncated() { return false; }
+        debugBytes() { return new Uint8Array(0); }
+        enter() {}
+        run(fn) { return fn(); }
+    }
+    ThreadContext = NoopThreadContext;
+    getContext = function () { return undefined; };
     clearContext = function () {};
-    appendAttributes = function (_attributes) {};
-    isContextTruncated = function () { return false; };
     exports._currentRecordBytes = function () { return undefined; };
 }
 
+/**
+ * Build a name-addressed factory for ThreadContext. The supplied `keys`
+ * array is the same string list the caller publishes (or has published)
+ * as the `threadlocal.attribute_key_map` resource attribute in the
+ * OTEP-4719 process context: index N in this array is the uint8 key
+ * index N in the on-the-wire record. The mapping is captured once at
+ * factory time.
+ */
 function makeNamedContext(keys) {
     if (!Array.isArray(keys)) {
         throw new TypeError('keys must be an array of attribute names');
@@ -152,15 +148,11 @@ function makeNamedContext(keys) {
         return attributes;
     }
 
-    function toBaseOpts(opts) {
+    function buildContext(opts) {
         if (!opts || typeof opts !== 'object') {
             throw new TypeError('options object required');
         }
-        return {
-            traceId: opts.traceId,
-            spanId: opts.spanId,
-            attributes: resolveAttributes(opts.namedAttributes),
-        };
+        return new ThreadContext(opts.traceId, opts.spanId, resolveAttributes(opts.namedAttributes));
     }
 
     // Snapshot of the OTEP-4719 process-context attributes the caller should
@@ -176,28 +168,23 @@ function makeNamedContext(keys) {
     });
 
     return {
-        runWithContext(fn, opts) {
-            return runWithContext(fn, toBaseOpts(opts));
-        },
+        buildContext,
+        // Sugar: build a context from `opts`, then enter / run / clear via
+        // the ThreadContext methods.
         enterWithContext(opts) {
-            enterWithContext(toBaseOpts(opts));
+            buildContext(opts).enter();
+        },
+        runWithContext(fn, opts) {
+            return buildContext(opts).run(fn);
         },
         clearContext() {
             clearContext();
-        },
-        appendAttributes(namedAttributes) {
-            appendAttributes(resolveAttributes(namedAttributes));
-        },
-        isContextTruncated() {
-            return isContextTruncated();
         },
         processContextAttributes,
     };
 }
 
-exports.runWithContext = runWithContext;
-exports.enterWithContext = enterWithContext;
+exports.ThreadContext = ThreadContext;
+exports.getContext = getContext;
 exports.clearContext = clearContext;
-exports.appendAttributes = appendAttributes;
-exports.isContextTruncated = isContextTruncated;
 exports.makeNamedContext = makeNamedContext;

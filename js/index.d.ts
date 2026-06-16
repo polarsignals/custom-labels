@@ -1,27 +1,16 @@
 /**
- * Inputs to {@link runWithContext} and {@link enterWithContext}.
+ * Inputs to {@link NamedContext.buildContext} (and the convenience methods
+ * that delegate to it).
  *
  * `traceId` and `spanId` are passed as raw bytes (a `Uint8Array` of length 16
  * and 8 respectively; `Buffer` is acceptable as a subclass).
  *
- * `attributes`, if present, is positional: index N in the array is the value
- * for uint8 key index N on the wire. Slots that are `null`, `undefined`, or
- * absent (array holes) are skipped. Non-string values are coerced via
- * `toString`. Values longer than 255 UTF-8 bytes are silently truncated and
- * attributes that would overflow the 612-byte payload budget are silently
- * dropped. Array length must not exceed 256.
- */
-export interface ContextOptions {
-    traceId: Uint8Array;
-    spanId: Uint8Array;
-    attributes?: Array<string | null | undefined>;
-}
-
-/**
- * Inputs to the methods returned by {@link makeNamedContext}. Same as
- * {@link ContextOptions} but attributes are addressed by name; names are
- * resolved to uint8 key indexes using the array passed to
- * {@link makeNamedContext}.
+ * `namedAttributes` are resolved to positional uint8 key indexes via the
+ * `keys` array passed to {@link makeNamedContext}. Values are coerced to
+ * strings via `toString`. Values longer than 255 UTF-8 bytes are silently
+ * truncated, and attributes that would overflow the 612-byte payload cap
+ * are silently dropped (see {@link ThreadContext.isTruncated}). Names that
+ * aren't in the key map throw.
  */
 export interface NamedContextOptions {
     traceId: Uint8Array;
@@ -64,56 +53,96 @@ export interface ProcessContextAttributes {
 }
 
 /**
- * Object returned by {@link makeNamedContext}. Each method mirrors the
- * top-level function of the same name, but accepts attributes by name
- * instead of positionally.
+ * A thread-context record. Construct with `new ThreadContext(...)`; install
+ * via the {@link enter} or {@link run} instance methods. The underlying
+ * native record is GC-owned: when no JS or async-context-frame reference
+ * survives, it's freed.
+ *
+ * `appendAttributes` mutates the record in place. Because every async-context
+ * frame that holds the same `ThreadContext` reference observes the same
+ * native record buffer, an append is visible across all those frames even
+ * when the reallocate path runs (the wrapper's internal pointer is updated,
+ * the JS object is not replaced).
  */
-export interface NamedContext {
-    runWithContext<T>(fn: () => T, opts: NamedContextOptions): T;
-    enterWithContext(opts: NamedContextOptions): void;
-
+export interface ThreadContext {
     /**
-     * Same as the top-level {@link clearContext}, exposed on the named
-     * context for API symmetry. Detaches any thread-context record from
-     * the current asynchronous scope.
-     */
-    clearContext(): void;
-
-    /**
-     * Append attributes to the currently active thread-context record (the
-     * one a prior `runWithContext` or `enterWithContext` attached). Names
-     * are resolved to indices via the keys passed to {@link makeNamedContext}.
-     *
-     * The argument accepts the same shapes as
-     * {@link NamedContextOptions.namedAttributes}.
-     *
-     * Append-only: existing attributes are never modified. If a caller
-     * appends at a key that's already present, the OTEP "reader takes the
-     * first occurrence" rule means the new value is inert; avoid that.
+     * Append attributes to this record (positional, same shape as the
+     * constructor's `attributes` argument). Append-only: existing
+     * attributes are never modified.
      *
      * Attributes that would push the record past the 612-byte attrs_data
-     * cap are silently dropped, and {@link isContextTruncated} starts
-     * returning `true` for the current context.
-     *
-     * Throws if no context is currently attached.
+     * cap are silently dropped, and {@link isTruncated} starts returning
+     * `true`.
      */
-    appendAttributes(
-        namedAttributes:
-            | Record<string, unknown>
-            | Map<string, unknown>
-            | Array<[string, unknown]>,
-    ): void;
+    appendAttributes(attributes: Array<string | null | undefined> | undefined): void;
 
     /**
-     * Returns true if at any point during the current context's lifetime —
-     * either at construction (`runWithContext` / `enterWithContext`) or in
-     * a subsequent `appendAttributes` call — at least one attribute had
-     * to be dropped because it would have pushed the record past the
-     * 612-byte attrs_data cap. Always returns false if no context is
-     * currently attached.
+     * True if at any point in this context's lifetime — either at
+     * construction or in a subsequent {@link appendAttributes} call — at
+     * least one attribute had to be dropped because it would have pushed
+     * the record past the 612-byte attrs_data cap.
      */
-    isContextTruncated(): boolean;
+    isTruncated(): boolean;
 
+    /** Debug-only: returns the on-the-wire record bytes. Not stable. */
+    debugBytes(): Uint8Array;
+
+    /**
+     * Attach this context to the current async-context frame (and every
+     * frame derived from it until the frame ends or {@link clearContext}
+     * detaches it). Re-installing the same context reference is cheap (no
+     * allocation); per-span caching of the context on the caller side is
+     * the intended usage pattern.
+     *
+     * On non-Linux platforms this is a no-op.
+     */
+    enter(): void;
+
+    /**
+     * Attach this context for the duration of `fn`. Equivalent to
+     * `als.run(this, fn)` — after `fn` returns, the previous context is
+     * restored. Returns whatever `fn` returns; if `fn` returns a Promise,
+     * the same Promise is propagated. On non-Linux platforms simply
+     * invokes `fn`.
+     */
+    run<T>(fn: () => T): T;
+}
+
+/**
+ * Constructor for {@link ThreadContext}. `attributes`, if present, is
+ * positional: index N is the value for uint8 key index N on the wire.
+ * Slots that are `null`, `undefined`, or absent (array holes) are skipped.
+ * Non-string values are coerced via `toString`. Array length must not
+ * exceed 256.
+ *
+ * On non-Linux platforms, returns a no-op instance whose methods do
+ * nothing — the OTEP-4947 reader contract is ELF-TLSDESC, only meaningful
+ * on Linux.
+ */
+export interface ThreadContextCtor {
+    new (
+        traceId: Uint8Array,
+        spanId: Uint8Array,
+        attributes?: Array<string | null | undefined>,
+    ): ThreadContext;
+}
+
+/**
+ * Object returned by {@link makeNamedContext}. Resolves the
+ * `namedAttributes` map to a positional array against the key list
+ * captured at factory time and builds a {@link ThreadContext};
+ * convenience methods compose with {@link ThreadContext.enter} /
+ * {@link ThreadContext.run}.
+ */
+export interface NamedContext {
+    /** Allocate a ThreadContext with attributes resolved positionally by name. */
+    buildContext(opts: NamedContextOptions): ThreadContext;
+    /** Sugar: `buildContext(opts).enter()`. */
+    enterWithContext(opts: NamedContextOptions): void;
+    /** Sugar: `buildContext(opts).run(fn)`. */
+    runWithContext<T>(fn: () => T, opts: NamedContextOptions): T;
+    /** Sugar: re-export of the module-level {@link clearContext}. */
+    clearContext(): void;
     /**
      * Snapshot of the OTEP-4719 process-context attributes the caller should
      * publish to keep this context's key map in sync with what readers see.
@@ -123,79 +152,30 @@ export interface NamedContext {
 }
 
 /**
- * Run `fn` with an OTEP-4947 thread-context record attached to the current
- * asynchronous context. The record propagates through asynchronous
- * continuations and Node.js IO callbacks transparently via
- * `AsyncLocalStorage.run`, and is restored to its prior value when `fn`
- * returns (or its returned promise settles).
- *
- * On non-Linux platforms this is a no-op that simply invokes `fn`.
+ * Construct a thread-context record. Caller manages the lifetime. On
+ * non-Linux platforms, returns a no-op instance.
  */
-export function runWithContext<T>(fn: () => T, opts: ContextOptions): T;
+export const ThreadContext: ThreadContextCtor;
 
 /**
- * Attach an OTEP-4947 thread-context record to the current asynchronous
- * context via `AsyncLocalStorage.enterWith`. Unlike {@link runWithContext}
- * there is no scope: the attachment persists until the current async context
- * naturally ends (e.g. the request handler that called `enterWithContext`
- * returns).
- *
- * On non-Linux platforms this is a no-op.
+ * Returns the {@link ThreadContext} currently attached to the active
+ * async-context frame, or `undefined` if none is.
  */
-export function enterWithContext(opts: ContextOptions): void;
+export function getContext(): ThreadContext | undefined;
 
 /**
- * Detach any thread-context record from the current asynchronous scope.
- * Subsequent reads in the same scope (until a new
- * {@link runWithContext}/{@link enterWithContext} attaches one) see no
- * active context. Useful, for instance, when a tracing span ends but the
- * surrounding async context lives on for unrelated work.
- *
- * Idempotent: calling when there is no active context is a no-op.
- *
- * On non-Linux platforms this is a no-op.
+ * Detach any {@link ThreadContext} from the current async-context frame.
+ * Idempotent when no context is attached. On non-Linux platforms this is
+ * a no-op.
  */
 export function clearContext(): void;
 
 /**
- * Append attributes to the currently active thread-context record (the one
- * a prior {@link runWithContext} or {@link enterWithContext} attached).
- * Positional, same shape as {@link ContextOptions.attributes}.
- *
- * Append-only: existing attributes are never modified. If a caller appends
- * at a key index that's already present, the OTEP "reader takes the first
- * occurrence" rule means the new value is inert; avoid that.
- *
- * Attributes that would push the record past the 612-byte attrs_data cap
- * are silently dropped, and {@link isContextTruncated} starts returning
- * `true` for the current context.
- *
- * Throws if no context is currently attached.
- *
- * On non-Linux platforms this is a no-op.
- */
-export function appendAttributes(
-    attributes: Array<string | null | undefined>,
-): void;
-
-/**
- * Returns true if at any point during the current context's lifetime —
- * either at construction (via {@link runWithContext} / {@link enterWithContext})
- * or in a subsequent {@link appendAttributes} call — at least one attribute
- * had to be dropped because it would have pushed the record past the
- * 612-byte attrs_data cap.
- *
- * Returns false if no context is currently attached, and on non-Linux
- * platforms.
- */
-export function isContextTruncated(): boolean;
-
-/**
- * Build name-addressed wrappers around {@link runWithContext} and
- * {@link enterWithContext}. The supplied `keys` array is the same string
- * list the caller publishes (or has published) as the
- * `threadlocal.attribute_key_map` resource attribute in the OTEP-4719 process
- * context: index N in this array is the uint8 key index N in the on-the-wire
- * record. The mapping is captured once at factory time.
+ * Build a name-addressed factory for {@link ThreadContext}. The supplied
+ * `keys` array is the same string list the caller publishes (or has
+ * published) as the `threadlocal.attribute_key_map` resource attribute in
+ * the OTEP-4719 process context: index N in this array is the uint8 key
+ * index N in the on-the-wire record. The mapping is captured once at
+ * factory time.
  */
 export function makeNamedContext(keys: string[]): NamedContext;
