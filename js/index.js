@@ -57,7 +57,7 @@ if (process.platform === 'linux') {
             throw new TypeError('options object required');
         }
         ensureHook();
-        return new addon.CtxWrap(
+        return new addon.ThreadContext(
             opts.traceId,
             opts.spanId,
             opts.attributes,
@@ -89,7 +89,7 @@ if (process.platform === 'linux') {
         if (!wrap) {
             throw new Error('no active thread context; call runWithContext or enterWithContext first');
         }
-        wrap.append(attributes);
+        wrap.appendAttributes(attributes);
     };
 
     isContextTruncated = function () {

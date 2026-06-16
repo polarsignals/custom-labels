@@ -311,12 +311,12 @@ void CtxWrap::New(const FunctionCallbackInfo<Value> &args) {
   Local<Context> context = isolate->GetCurrentContext();
 
   if (!args.IsConstructCall()) [[unlikely]] {
-    isolate->ThrowError("CtxWrap must be called with `new`");
+    isolate->ThrowError("ThreadContext must be called with `new`");
     return;
   }
   if (args.Length() != 3) {
     isolate->ThrowError(
-        "CtxWrap expects 3 arguments: traceId, spanId, attributes");
+        "ThreadContext expects 3 arguments: traceId, spanId, attributes");
     return;
   }
 
@@ -389,7 +389,7 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value> &args) {
 
   CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
   if (!self) {
-    isolate->ThrowError("not a CtxWrap");
+    isolate->ThrowError("not a ThreadContext");
     return;
   }
   if (args.Length() != 1) {
@@ -476,7 +476,7 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value> &args) {
 void CtxWrap::IsTruncated(const FunctionCallbackInfo<Value> &args) {
   CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
   if (!self) {
-    args.GetIsolate()->ThrowError("not a CtxWrap");
+    args.GetIsolate()->ThrowError("not a ThreadContext");
     return;
   }
   args.GetReturnValue().Set(self->truncated_);
@@ -489,7 +489,7 @@ void CtxWrap::DebugBytes(const FunctionCallbackInfo<Value> &args) {
   Isolate *isolate = args.GetIsolate();
   CtxWrap *self = ObjectWrap::Unwrap<CtxWrap>(args.This());
   if (!self) {
-    isolate->ThrowError("not a CtxWrap");
+    isolate->ThrowError("not a ThreadContext");
     return;
   }
   const size_t total =
@@ -504,14 +504,14 @@ void CtxWrap::Init(Local<Object> exports) {
   Local<Context> context = isolate->GetCurrentContext();
 
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
-  tpl->SetClassName(String::NewFromUtf8Literal(isolate, "CtxWrap"));
+  tpl->SetClassName(String::NewFromUtf8Literal(isolate, "ThreadContext"));
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
   tpl->PrototypeTemplate()->Set(
       String::NewFromUtf8Literal(isolate, "debugBytes"),
       FunctionTemplate::New(isolate, DebugBytes));
   tpl->PrototypeTemplate()->Set(
-      String::NewFromUtf8Literal(isolate, "append"),
+      String::NewFromUtf8Literal(isolate, "appendAttributes"),
       FunctionTemplate::New(isolate, Append));
   tpl->PrototypeTemplate()->Set(
       String::NewFromUtf8Literal(isolate, "isTruncated"),
@@ -519,7 +519,7 @@ void CtxWrap::Init(Local<Object> exports) {
 
   Local<Function> constructor = tpl->GetFunction(context).ToLocalChecked();
   exports
-      ->Set(context, String::NewFromUtf8Literal(isolate, "CtxWrap"),
+      ->Set(context, String::NewFromUtf8Literal(isolate, "ThreadContext"),
             constructor)
       .FromJust();
 }
