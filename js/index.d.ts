@@ -32,7 +32,7 @@ export interface NamedContextOptions {
  * attribute map can spread this object into its own attributes.
  */
 export interface ProcessContextAttributes {
-    readonly 'threadlocal.schema_version': 'nodejs_v1';
+    readonly 'threadlocal.schema_version': 'nodejs_v1_dev';
     readonly 'threadlocal.attribute_key_map': readonly string[];
 
     /**
@@ -42,14 +42,14 @@ export interface ProcessContextAttributes {
      * from the V8 headers at addon-compile time so the reader doesn't have
      * to derive it from V8's pointer-compression / sandbox build flags.
      */
-    readonly 'threadlocal.nodejs_v1.wrapped_object_offset': number;
+    readonly 'threadlocal.wrapped_object_offset': number;
 
     /**
      * V8's tagged-pointer width in bytes (4 with pointer compression, 8
      * without). The reader can use this to derive the JSMap-, FixedArray-,
      * and OrderedHashMap-header offsets it walks without hardcoding them.
      */
-    readonly 'threadlocal.nodejs_v1.tagged_size': number;
+    readonly 'threadlocal.tagged_size': number;
 }
 
 /**

@@ -1,6 +1,6 @@
 'use strict';
 
-const SCHEMA_VERSION = 'nodejs_v1';
+const SCHEMA_VERSION = 'nodejs_v1_dev';
 
 // V8 layout constants the addon captured from the V8 headers Node bundles.
 // On non-Linux these fall back to the values matching Node's standard
@@ -163,8 +163,8 @@ function makeNamedContext(keys) {
     const processContextAttributes = Object.freeze({
         'threadlocal.schema_version': SCHEMA_VERSION,
         'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
-        'threadlocal.nodejs_v1.wrapped_object_offset': WRAPPED_OBJECT_OFFSET,
-        'threadlocal.nodejs_v1.tagged_size': TAGGED_SIZE,
+        'threadlocal.wrapped_object_offset': WRAPPED_OBJECT_OFFSET,
+        'threadlocal.tagged_size': TAGGED_SIZE,
     });
 
     return {
