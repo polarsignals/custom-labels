@@ -1,3 +1,5 @@
+'use strict';
+
 let runWithContext;
 let enterWithContext;
 let clearContext;
@@ -16,34 +18,28 @@ let TAGGED_SIZE = 8;
 
 if (process.platform === 'linux') {
     const bindings = require('bindings');
-
     const addon = bindings('customlabels');
     WRAPPED_OBJECT_OFFSET = addon.wrappedObjectOffset;
     TAGGED_SIZE = addon.taggedSize;
 
     const { AsyncLocalStorage } = require('node:async_hooks');
-    let als = undefined;
+    let als;
 
     function asyncContextFrameError() {
         const [major] = process.versions.node.split('.').map(Number);
-
         // If explicitly disabled, it's not in use.
-        if (process.execArgv.includes('--no-async-context-frame')) return "Node explicitly launched with --no-async-context-frame";
-
+        if (process.execArgv.includes('--no-async-context-frame')) return 'Node explicitly launched with --no-async-context-frame';
         // Since Node 24, AsyncContextFrame is the default unless disabled.
         if (major >= 24) return undefined;
-
         // In Node 22/23, it existed behind an experimental flag.
         if (process.execArgv.includes('--experimental-async-context-frame')) return undefined;
-        if (major >= 22) return "Node versions prior to v24 must be launched with --experimental-async-context-frame";
-
+        if (major >= 22) return 'Node versions prior to v24 must be launched with --experimental-async-context-frame';
         // Older versions: not available.
-        return "Node major versions prior to v22 do not support the feature at all";
+        return 'Node major versions prior to v22 do not support the feature at all';
     }
 
     function ensureHook() {
-        if (als)
-            return;
+        if (als) return;
         const err = asyncContextFrameError();
         if (err) {
             throw new Error(`otel thread-ctx writer requires async_context_frame support, which is unavailable: ${err}.`);
@@ -135,7 +131,7 @@ function makeNamedContext(keys) {
     });
 
     function resolveAttributes(named) {
-        if (named == null) return undefined;
+        if (named === null || named === undefined) return undefined;
         const attributes = [];
         const set = (name, value) => {
             const idx = indexByName.get(name);
