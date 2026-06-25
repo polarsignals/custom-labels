@@ -34,7 +34,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const lib = require('..');
-const { ThreadContext, getContext, clearContext, makeNamedContext, _currentRecordBytes } = lib;
+const { ThreadContext, getContext, clearContext, getProcessContextAttributes, _currentRecordBytes } = lib;
 
 // Helpers bridging the old positional-attrs test shape to the new
 // ThreadContext-first API.
@@ -330,74 +330,21 @@ test('concurrent async runWithContext calls keep contexts isolated', async () =>
     for (const s of bObs) assert.deepEqual(s, bSpan);
 });
 
-test('makeNamedContext rejects non-array keys', () => {
-    assert.throws(() => makeNamedContext({}), /must be an array/);
+test('getProcessContextAttributes rejects non-array keys', () => {
+    assert.throws(() => getProcessContextAttributes({}), /must be an array/);
 });
 
-test('makeNamedContext rejects more than 256 keys', () => {
+test('getProcessContextAttributes rejects more than 256 keys', () => {
     const tooMany = Array.from({ length: 257 }, (_, i) => `k${i}`);
-    assert.throws(() => makeNamedContext(tooMany), /exceeds 256/);
+    assert.throws(() => getProcessContextAttributes(tooMany), /exceeds 256/);
 });
 
-test('makeNamedContext rejects duplicate names', () => {
-    assert.throws(() => makeNamedContext(['x', 'y', 'x']), /duplicate key name/);
+test('getProcessContextAttributes rejects duplicate names', () => {
+    assert.throws(() => getProcessContextAttributes(['x', 'y', 'x']), /duplicate key name/);
 });
 
-test('makeNamedContext rejects non-string entries', () => {
-    assert.throws(() => makeNamedContext(['ok', 42]), /must be a string/);
-});
-
-test('namedAttributes (object form) resolves to indices', () => {
-    const named = makeNamedContext(['http.method', 'http.route']);
-    let bytes;
-    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        namedAttributes: { 'http.method': 'GET', 'http.route': '/x' },
-    });
-    assert.deepEqual(decodeAttrs(bytes), ['GET', '/x']);
-});
-
-test('namedAttributes (Map form) resolves to indices', () => {
-    const named = makeNamedContext(['a', 'b']);
-    let bytes;
-    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        namedAttributes: new Map([['a', 'A'], ['b', 'B']]),
-    });
-    assert.deepEqual(decodeAttrs(bytes), ['A', 'B']);
-});
-
-test('namedAttributes (array form) resolves to indices', () => {
-    const named = makeNamedContext(['a', 'b']);
-    let bytes;
-    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        namedAttributes: [['a', 'A'], ['b', 'B']],
-    });
-    assert.deepEqual(decodeAttrs(bytes), ['A', 'B']);
-});
-
-test('unknown name in namedAttributes is rejected', () => {
-    const named = makeNamedContext(['a']);
-    assert.throws(() => named.runWithContext(() => {}, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        namedAttributes: { unknown: 'v' },
-    }), /unknown attribute name: unknown/);
-});
-
-test('namedAttributes coerces non-string values', () => {
-    const named = makeNamedContext(['n']);
-    let bytes;
-    named.runWithContext(() => { bytes = _currentRecordBytes(); }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        namedAttributes: { n: 7 },
-    });
-    assert.deepEqual(decodeAttrs(bytes), ['7']);
+test('getProcessContextAttributes rejects non-string entries', () => {
+    assert.throws(() => getProcessContextAttributes(['ok', 42]), /must be a string/);
 });
 
 test('enterWithContext attaches the record to the current async scope', () => {
@@ -420,18 +367,9 @@ test('enterWithContext attaches the record to the current async scope', () => {
     assert.equal(_currentRecordBytes(), undefined);
 });
 
-test('makeNamedContext returns an object exposing buildContext + sugar', () => {
-    const named = makeNamedContext(['a']);
-    assert.equal(typeof named.buildContext, 'function');
-    assert.equal(typeof named.runWithContext, 'function');
-    assert.equal(typeof named.enterWithContext, 'function');
-    assert.equal(typeof named.clearContext, 'function');
-});
-
-test('makeNamedContext exposes processContextAttributes matching the input keys', () => {
+test('getProcessContextAttributes returns the expected shape', () => {
     const keys = ['http.method', 'http.route', 'user.id'];
-    const named = makeNamedContext(keys);
-    const pca = named.processContextAttributes;
+    const pca = getProcessContextAttributes(keys);
     assert.equal(pca['threadlocal.schema_version'], 'nodejs_v1_dev');
     assert.deepEqual(pca['threadlocal.attribute_key_map'], keys);
     // V8 layout constants — on Node's standard build (no pointer
@@ -446,10 +384,9 @@ test('makeNamedContext exposes processContextAttributes matching the input keys'
     ]);
 });
 
-test('processContextAttributes is frozen and a defensive copy', () => {
+test('getProcessContextAttributes is frozen and a defensive copy', () => {
     const keys = ['http.method', 'http.route'];
-    const named = makeNamedContext(keys);
-    const pca = named.processContextAttributes;
+    const pca = getProcessContextAttributes(keys);
     assert.ok(Object.isFrozen(pca));
     assert.ok(Object.isFrozen(pca['threadlocal.attribute_key_map']));
 
@@ -462,18 +399,6 @@ test('processContextAttributes is frozen and a defensive copy', () => {
     assert.throws(() => {
         pca['threadlocal.schema_version'] = 'tampered';
     }, /read-only|read only|TypeError/i);
-});
-
-test('named.enterWithContext attaches a name-addressed record', () => {
-    const named = makeNamedContext(['route']);
-    tcRun(() => {
-        named.enterWithContext({
-            traceId: TRACE_ID_BYTES,
-            spanId:  SPAN_ID_BYTES,
-            namedAttributes: { route: '/x' },
-        });
-        assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['/x']);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
 });
 
 test('clearContext detaches the active record within a scope', () => {
@@ -524,19 +449,6 @@ test('enterWithContext re-establishes a record after a clearContext', () => {
         tcEnter({ traceId: TRACE_ID_BYTES, spanId: newSpan });
         assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, newSpan);
     }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
-});
-
-test('named.clearContext detaches the active record', () => {
-    const named = makeNamedContext(['route']);
-    named.runWithContext(() => {
-        assert.ok(_currentRecordBytes());
-        named.clearContext();
-        assert.equal(_currentRecordBytes(), undefined);
-    }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        namedAttributes: { route: '/x' },
-    });
 });
 
 test('appendAttributes adds entries to the current record', () => {
@@ -655,8 +567,7 @@ test('isContextTruncated returns false for a non-truncated record', () => {
 });
 
 test('isTruncated reflects appended-then-overflowed entries', () => {
-    const named = makeNamedContext(['a', 'b', 'c']);
-    named.runWithContext(() => {
+    tcRun(() => {
         assert.equal(tcIsTruncated(), false);
         tcAppend([, , 'c'.repeat(255), , , 'd'.repeat(255), , , 'e'.repeat(255)]);
         // Three 257-byte appends past the existing ~2 bytes = 771 > 612.
@@ -665,7 +576,7 @@ test('isTruncated reflects appended-then-overflowed entries', () => {
     }, {
         traceId: TRACE_ID_BYTES,
         spanId:  SPAN_ID_BYTES,
-        namedAttributes: { a: 'a', b: 'b' },
+        attributes: ['a', 'b'],
     });
 });
 
@@ -681,18 +592,6 @@ test('appendAttributes propagates through async continuations', async () => {
         spanId:  SPAN_ID_BYTES,
         attributes: ['before'],
     });
-});
-
-test('buildContext rejects unknown names', () => {
-    const named = makeNamedContext(['known']);
-    assert.throws(
-        () => named.buildContext({
-            traceId: TRACE_ID_BYTES,
-            spanId:  SPAN_ID_BYTES,
-            namedAttributes: { unknown: 'v' },
-        }),
-        /unknown attribute name: unknown/,
-    );
 });
 
 test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {

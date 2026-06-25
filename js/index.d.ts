@@ -1,31 +1,8 @@
 /**
- * Inputs to {@link NamedContext.buildContext} (and the convenience methods
- * that delegate to it).
- *
- * `traceId` and `spanId` are passed as raw bytes (a `Uint8Array` of length 16
- * and 8 respectively; `Buffer` is acceptable as a subclass).
- *
- * `namedAttributes` are resolved to positional uint8 key indexes via the
- * `keys` array passed to {@link makeNamedContext}. Values are coerced to
- * strings via `toString`. Values longer than 255 UTF-8 bytes are silently
- * truncated, and attributes that would overflow the 612-byte payload cap
- * are silently dropped (see {@link ThreadContext.isTruncated}). Names that
- * aren't in the key map throw.
- */
-export interface NamedContextOptions {
-    traceId: Uint8Array;
-    spanId: Uint8Array;
-    namedAttributes?:
-        | Record<string, unknown>
-        | Map<string, unknown>
-        | Array<[string, unknown]>;
-}
-
-/**
  * OTEP-4719 process-context attributes corresponding to a particular
- * {@link NamedContext}. Suitable for publishing as part of the application's
- * process context so an out-of-process reader can decode the uint8 key
- * indexes emitted in each thread-context record back to attribute names.
+ * key list. Suitable for publishing as part of the application's process
+ * context so an out-of-process reader can decode the uint8 key indexes
+ * emitted in each thread-context record back to attribute names.
  *
  * The shape matches the OTEP-4947 process-context schema verbatim: an
  * application that publishes its process context as a flat string-keyed
@@ -128,30 +105,6 @@ export interface ThreadContextCtor {
 }
 
 /**
- * Object returned by {@link makeNamedContext}. Resolves the
- * `namedAttributes` map to a positional array against the key list
- * captured at factory time and builds a {@link ThreadContext};
- * convenience methods compose with {@link ThreadContext.enter} /
- * {@link ThreadContext.run}.
- */
-export interface NamedContext {
-    /** Allocate a ThreadContext with attributes resolved positionally by name. */
-    buildContext(opts: NamedContextOptions): ThreadContext;
-    /** Sugar: `buildContext(opts).enter()`. */
-    enterWithContext(opts: NamedContextOptions): void;
-    /** Sugar: `buildContext(opts).run(fn)`. */
-    runWithContext<T>(fn: () => T, opts: NamedContextOptions): T;
-    /** Sugar: re-export of the module-level {@link clearContext}. */
-    clearContext(): void;
-    /**
-     * Snapshot of the OTEP-4719 process-context attributes the caller should
-     * publish to keep this context's key map in sync with what readers see.
-     * Immutable; safe to spread directly into the caller's attribute map.
-     */
-    readonly processContextAttributes: ProcessContextAttributes;
-}
-
-/**
  * Construct a thread-context record. Caller manages the lifetime. On
  * non-Linux platforms, returns a no-op instance.
  */
@@ -171,11 +124,16 @@ export function getContext(): ThreadContext | undefined;
 export function clearContext(): void;
 
 /**
- * Build a name-addressed factory for {@link ThreadContext}. The supplied
- * `keys` array is the same string list the caller publishes (or has
- * published) as the `threadlocal.attribute_key_map` resource attribute in
- * the OTEP-4719 process context: index N in this array is the uint8 key
- * index N in the on-the-wire record. The mapping is captured once at
- * factory time.
+ * Returns the OTEP-4719 process-context attributes the caller should
+ * publish so an out-of-process reader can decode the on-the-wire uint8
+ * key indexes back to attribute names. The supplied `keys` array is the
+ * same string list the caller writes into the positional `attributes`
+ * argument of {@link ThreadContext}: index N here is the uint8 key index
+ * N in each record.
+ *
+ * `keys` is validated: must be a string array of length ≤ 256 with no
+ * duplicates.
  */
-export function makeNamedContext(keys: string[]): NamedContext;
+export function getProcessContextAttributes(
+    keys: string[],
+): ProcessContextAttributes;

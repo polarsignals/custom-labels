@@ -101,90 +101,44 @@ if (process.platform === 'linux') {
 }
 
 /**
- * Build a name-addressed factory for ThreadContext. The supplied `keys`
- * array is the same string list the caller publishes (or has published)
- * as the `threadlocal.attribute_key_map` resource attribute in the
- * OTEP-4719 process context: index N in this array is the uint8 key
- * index N in the on-the-wire record. The mapping is captured once at
- * factory time.
+ * Snapshot of the OTEP-4719 process-context attributes the caller should
+ * publish so an out-of-process reader can (a) decode the on-the-wire
+ * uint8 key indexes back to names and (b) walk V8's wrapper / hashmap
+ * layout without doing its own V8-internal symbol lookups. The `keys`
+ * argument is the same string list the caller writes into ThreadContext's
+ * positional attributes array: index N in this array is the uint8 key
+ * index N in the on-the-wire record.
+ *
+ * The returned object is frozen and defensively copied; safe to spread
+ * into the caller's process-context attribute map.
  */
-function makeNamedContext(keys) {
+function getProcessContextAttributes(keys) {
     if (!Array.isArray(keys)) {
         throw new TypeError('keys must be an array of attribute names');
     }
     if (keys.length > 256) {
         throw new RangeError('keys array exceeds 256 entries');
     }
-    const indexByName = new Map();
-    keys.forEach((name, i) => {
+    const seen = new Set();
+    for (let i = 0; i < keys.length; ++i) {
+        const name = keys[i];
         if (typeof name !== 'string') {
             throw new TypeError('every key must be a string');
         }
-        if (indexByName.has(name)) {
-            throw new Error(`duplicate key name at indexes ${indexByName.get(name)} and ${i}: ${name}`);
+        if (seen.has(name)) {
+            throw new Error(`duplicate key name at index ${i}: ${name}`);
         }
-        indexByName.set(name, i);
-    });
-
-    function resolveAttributes(named) {
-        if (named === null || named === undefined) return undefined;
-        const attributes = [];
-        const set = (name, value) => {
-            const idx = indexByName.get(name);
-            if (idx === undefined) {
-                throw new Error(`unknown attribute name: ${name}`);
-            }
-            attributes[idx] = String(value);
-        };
-        if (Array.isArray(named)) {
-            for (const [n, v] of named) set(n, v);
-        } else if (named instanceof Map) {
-            for (const [n, v] of named) set(n, v);
-        } else if (typeof named === 'object') {
-            for (const n of Object.keys(named)) set(n, named[n]);
-        } else {
-            throw new TypeError('namedAttributes must be an object, Map, or array of pairs');
-        }
-        return attributes;
+        seen.add(name);
     }
-
-    function buildContext(opts) {
-        if (!opts || typeof opts !== 'object') {
-            throw new TypeError('options object required');
-        }
-        return new ThreadContext(opts.traceId, opts.spanId, resolveAttributes(opts.namedAttributes));
-    }
-
-    // Snapshot of the OTEP-4719 process-context attributes the caller should
-    // publish so an out-of-process reader can (a) decode key indices back to
-    // names and (b) walk V8's wrapper/hashmap layout without doing its own
-    // V8-internal symbol lookups. Frozen + defensively copied so the caller
-    // can't mutate it back into our internal state.
-    const processContextAttributes = Object.freeze({
+    return Object.freeze({
         'threadlocal.schema_version': SCHEMA_VERSION,
         'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
         'threadlocal.wrapped_object_offset': WRAPPED_OBJECT_OFFSET,
         'threadlocal.tagged_size': TAGGED_SIZE,
     });
-
-    return {
-        buildContext,
-        // Sugar: build a context from `opts`, then enter / run / clear via
-        // the ThreadContext methods.
-        enterWithContext(opts) {
-            buildContext(opts).enter();
-        },
-        runWithContext(fn, opts) {
-            return buildContext(opts).run(fn);
-        },
-        clearContext() {
-            clearContext();
-        },
-        processContextAttributes,
-    };
 }
 
 exports.ThreadContext = ThreadContext;
 exports.getContext = getContext;
 exports.clearContext = clearContext;
-exports.makeNamedContext = makeNamedContext;
+exports.getProcessContextAttributes = getProcessContextAttributes;

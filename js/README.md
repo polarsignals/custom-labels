@@ -65,29 +65,23 @@ context.appendAttributes([, , '200']);  // index 2 = http.status, say
 clearContext();  // detach when the span ends
 ```
 
-If the caller maintains a stable list of attribute names — the same list
-published in the process context — `makeNamedContext` provides a name-based
-factory for `ThreadContext`:
+The same key list the caller writes into `ThreadContext`'s positional
+`attributes` argument has to be published alongside the on-the-wire
+record so a reader can decode the uint8 key indexes back to names.
+`getProcessContextAttributes(keys)` returns a snapshot of the OTEP-4719
+attributes (schema version, key map, V8 layout constants) ready to
+spread into the application's process-context attribute map:
 
 ```javascript
-const { makeNamedContext } = require('@polarsignals/custom-labels');
+const { getProcessContextAttributes } = require('@polarsignals/custom-labels');
 const keys = [
     'http.method', // index 0
     'http.route',  // index 1
 ];
-const named = makeNamedContext(keys);
-
-named.runWithContext(
-    () => handleRequest(),
-    {
-        traceId: Buffer.from('4bf92f3577b34da6a3ce929d0e0e4736', 'hex'),
-        spanId:  Buffer.from('00f067aa0ba902b7', 'hex'),
-        namedAttributes: {
-            'http.method': 'GET',
-            'http.route':  '/api/v1/widgets',
-        },
-    },
-);
+publishProcessContext({
+    ...getProcessContextAttributes(keys),
+    // ...the application's own attributes
+});
 ```
 
 ## API
@@ -170,47 +164,36 @@ Detach any `ThreadContext` from the current async-context frame, via
 `AsyncLocalStorage.enterWith(undefined)`. Idempotent when no context is
 attached. On non-Linux platforms this is a no-op.
 
-### `makeNamedContext(keys)`
+### `getProcessContextAttributes(keys)`
 
-Returns a factory object `{ buildContext, runWithContext, enterWithContext,
-clearContext, processContextAttributes }`. The `keys` array is the same
-string list the caller publishes (or has published) as the
-`threadlocal.attribute_key_map` resource attribute in the OTEP-4719 process
-context: index N in `keys` is uint8 key index N on the wire. The mapping is
-captured once at factory time.
+Returns a frozen, defensively-copied snapshot of the OTEP-4719
+process-context attributes that go with this writer's on-the-wire
+records. The `keys` array is the same string list the caller writes into
+`ThreadContext`'s positional `attributes` argument: index N in `keys` is
+uint8 key index N on the wire.
 
-- **`buildContext(opts)`** — resolves `opts.namedAttributes` against the key
-  map and returns a `ThreadContext`. `opts.namedAttributes` accepts a
-  `Record<string,unknown>`, a `Map`, or an `Array<[string,unknown]>`. Unknown
-  names throw.
-- **`enterWithContext(opts)`** — sugar for `buildContext(opts).enter()`.
-- **`runWithContext(fn, opts)`** — sugar for
-  `buildContext(opts).run(fn)`.
-- **`clearContext()`** — re-export of the module-level `clearContext()`.
-- **`processContextAttributes`** — frozen, defensively-copied snapshot of
-  the OTEP-4719 process-context attributes that correspond to this
-  `NamedContext`:
+`keys` is validated: must be a string array of length ≤ 256 with no
+duplicates.
 
 ```javascript
 {
-    'threadlocal.schema_version': 'nodejs_v1',
+    'threadlocal.schema_version': 'nodejs_v1_dev',
     'threadlocal.attribute_key_map': ['http.method', 'http.route', ...],
     // V8 layout constants captured from the V8 headers the addon was
     // compiled against — let the reader walk our wrapper and V8's
     // OrderedHashMap layout without having to derive these itself from
     // pointer-compression / sandbox build flags.
-    'threadlocal.nodejs_v1.wrapped_object_offset': 24,
-    'threadlocal.nodejs_v1.tagged_size': 8,
+    'threadlocal.wrapped_object_offset': 24,
+    'threadlocal.tagged_size': 8,
 }
 ```
 
-Spread it (or copy its entries) into whatever attribute map the application
-hands to its OTEP-4719 process-context publisher. Publishing the same
-`keys` you passed to `makeNamedContext` is the easiest way to keep the
-writer-side name-to-index mapping in sync with what an external reader will
-use to decode the on-the-wire `key_index` bytes back to names; the two
-`nodejs_v1.*` entries are V8 layout constants the reader needs to walk from
-our wrapper to the underlying record.
+Spread it (or copy its entries) into whatever attribute map the
+application hands to its OTEP-4719 process-context publisher. The
+`attribute_key_map` keeps the writer-side index→name mapping in sync with
+what an external reader will use to decode the on-the-wire `key_index`
+bytes; the two layout-constant entries are what the reader needs to walk
+from our V8 wrapper to the underlying record.
 
 ## Discovery contract (for reader implementers)
 
