@@ -347,11 +347,11 @@ test('getProcessContextAttributes rejects non-string entries', () => {
     assert.throws(() => getProcessContextAttributes(['ok', 42]), /must be a string/);
 });
 
-test('enterWithContext attaches the record to the current async scope', () => {
+test('enterWithContext attaches the record to the current async scope', async () => {
     // Provide an outer scope so the enterWith attachment can't leak past
     // this test: when this outer runWithContext returns, the inner scope
     // (and anything enterWith did within it) is discarded.
-    tcRun(() => {
+    await tcRun(() => {
         assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, SPAN_ID_BYTES);
 
         const newSpan = bytesFromHex('aabbccddeeff0011');
