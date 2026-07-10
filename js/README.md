@@ -113,11 +113,10 @@ signal and let the silent drop apply.
 Instance methods:
 
 - **`appendAttributes(attributes)`** — append attributes to this record
-  (positional, same shape as the constructor's `attributes`). Append-only:
-  existing entries are never overwritten. Appending at a key index that's
-  already in the record is allowed but inert — the OTEP specifies that
-  readers honor the first occurrence and ignore duplicates, so the new value
-  silently disappears. Avoid that. Entries that would push the encoded
+  (positional, same shape as the constructor's `attributes`). Appending with
+  a key index that's already in the record is allowed: OTEP-4947 duplicates
+  are last-wins, so the new value overwrites the earlier one for readers
+  that decode the record in full. Entries that would push the encoded
   payload past the 612-byte cap are silently dropped (skip-and-continue:
   smaller subsequent entries may still fit), and `isTruncated()` starts
   returning `true`.
