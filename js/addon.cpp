@@ -158,11 +158,11 @@ class CtxWrap : public ObjectWrap {
  private:
   static void New(const FunctionCallbackInfo<Value>& args);
   static void DebugBytes(const FunctionCallbackInfo<Value>& args);
-  static void Append(const FunctionCallbackInfo<Value>& args);
+  static void AppendAttributes(const FunctionCallbackInfo<Value>& args);
   static void IsTruncated(const FunctionCallbackInfo<Value>& args);
 
   // Encode the JS array at `attrs_val` into `out` as packed (key, len, value)
-  // entries. Same shape used by both New() and Append(). On a parse error
+  // entries. Same shape used by both New() and AppendAttributes(). On a parse error
   // (non-array, etc.) throws via `isolate` and returns false. On per-entry
   // overflow against the 612-byte attrs_data cap, the entry is dropped,
   // `*out_truncated` is set to true, and processing continues with the
@@ -192,7 +192,7 @@ class CtxWrap : public ObjectWrap {
   // `record_->attrs_data_size <= capacity_ <= MAX_ATTRS_DATA_SIZE`.
   size_t capacity_;
   // Set to true (once, never cleared) if at any point in this record's
-  // lifetime — during New() or any subsequent Append() — at least one
+  // lifetime — during New() or any subsequent AppendAttributes() — at least one
   // attribute had to be dropped because it would have pushed attrs_data
   // past MAX_ATTRS_DATA_SIZE.
   bool truncated_;
@@ -280,7 +280,7 @@ bool CtxWrap::EncodeAttrs(Isolate* isolate,
 
   // Phase 2: encode. From here on we don't call any V8 function that can
   // enter user JS; the record is safe to mutate under the assumption that
-  // no re-entrant Append will interleave.
+  // no re-entrant AppendAttributes will interleave.
   out->reserve(out->size() + coerced.size() * 4);
   for (const auto& [i, v] : coerced) {
 #if NODE_MAJOR_VERSION >= 24
@@ -395,7 +395,7 @@ void CtxWrap::New(const FunctionCallbackInfo<Value>& args) {
   // other field write, with an `atomic_signal_fence` to pin that ordering at
   // compile time and a volatile store so the compiler can't fold or hoist
   // the write. The signal fence + volatile store is also the protocol used
-  // by Append() in its in-place path.
+  // by AppendAttributes() in its in-place path.
   std::atomic_signal_fence(std::memory_order_release);
   *reinterpret_cast<volatile uint8_t*>(&record->valid) = 1;
 
@@ -408,7 +408,7 @@ void CtxWrap::New(const FunctionCallbackInfo<Value>& args) {
 // (if the appended bytes fit in the current allocation's slack) or
 // reallocates to a larger one (geometrically), keeping invariant
 // `record_->attrs_data_size <= capacity_`.
-void CtxWrap::Append(const FunctionCallbackInfo<Value>& args) {
+void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
   Isolate* isolate = args.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
 
@@ -418,7 +418,7 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value>& args) {
     return;
   }
   if (args.Length() != 1) {
-    isolate->ThrowError("append expects 1 argument: attributes");
+    isolate->ThrowError("appendAttributes expects 1 argument: attributes");
     return;
   }
 
@@ -498,7 +498,7 @@ void CtxWrap::Append(const FunctionCallbackInfo<Value>& args) {
 // Returns true if any attribute was ever dropped from this wrapper's
 // record because it would have pushed attrs_data past the cap — set during
 // CtxWrap::New() if the initial set didn't fit, or by any subsequent
-// CtxWrap::Append() call.
+// CtxWrap::AppendAttributes() call.
 void CtxWrap::IsTruncated(const FunctionCallbackInfo<Value>& args) {
   CtxWrap* self = ObjectWrap::Unwrap<CtxWrap>(args.This());
   if (!self) {
@@ -538,7 +538,7 @@ void CtxWrap::Init(Local<Object> exports) {
       FunctionTemplate::New(isolate, DebugBytes));
   tpl->PrototypeTemplate()->Set(
       String::NewFromUtf8Literal(isolate, "appendAttributes"),
-      FunctionTemplate::New(isolate, Append));
+      FunctionTemplate::New(isolate, AppendAttributes));
   tpl->PrototypeTemplate()->Set(
       String::NewFromUtf8Literal(isolate, "isTruncated"),
       FunctionTemplate::New(isolate, IsTruncated));
