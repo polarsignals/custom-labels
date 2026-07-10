@@ -36,17 +36,6 @@ const { spawnSync } = require('node:child_process');
 const lib = require('..');
 const { ThreadContext, getContext, clearContext, getProcessContextAttributes, _currentRecordBytes } = lib;
 
-// Helpers bridging the old positional-attrs test shape to the new
-// ThreadContext-first API.
-function tcRun(fn, opts) {
-    return new ThreadContext(opts.traceId, opts.spanId, opts.attributes).run(fn);
-}
-function tcEnter(opts) {
-    new ThreadContext(opts.traceId, opts.spanId, opts.attributes).enter();
-}
-function tcAppend(attributes) { getContext().appendAttributes(attributes); }
-function tcIsTruncated() { const c = getContext(); return c ? c.isTruncated() : false; }
-
 const TRACE_ID_BYTES = bytesFromHex('0102030405060708090a0b0c0d0e0f10');
 const SPAN_ID_BYTES  = bytesFromHex('1112131415161718');
 
@@ -88,9 +77,9 @@ function decodeAttrs(bytes) {
     return out;
 }
 
-function captureBytes(opts) {
+function captureBytes({ traceId, spanId, attributes } = {}) {
     let bytes;
-    tcRun(() => { bytes = _currentRecordBytes(); }, opts);
+    new ThreadContext(traceId, spanId, attributes).run(() => { bytes = _currentRecordBytes(); });
     return bytes;
 }
 
@@ -236,13 +225,9 @@ test('attrs sets past the 612-byte cap are truncated (entries past the limit dro
     const d = 'd'.repeat(30);
     let bytes;
     let truncated;
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, [a, b, c, d]).run(() => {
         bytes = _currentRecordBytes();
-        truncated = tcIsTruncated();
-    }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: [a, b, c, d],
+        truncated = getContext().isTruncated();
     });
     assert.deepEqual(decodeAttrs(bytes), [a, b, , d]);
     assert.equal(decodeHeader(bytes).attrsDataSize, 514 + 32);
@@ -266,39 +251,37 @@ test('non-array attributes argument is rejected', () => {
     }), /attributes must be an array/);
 });
 
-test('runWithContext returns fn result', () => {
-    const result = tcRun(() => 'ok', { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+test('ThreadContext.run returns fn result', () => {
+    const result = new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => 'ok');
     assert.equal(result, 'ok');
 });
 
-test('outside runWithContext, no active record', () => {
+test('outside a ThreadContext, no active record', () => {
     assert.equal(_currentRecordBytes(), undefined);
 });
 
-test('after runWithContext returns, no active record', () => {
-    tcRun(() => {}, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+test('after ThreadContext.run returns, no active record', () => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {});
     assert.equal(_currentRecordBytes(), undefined);
 });
 
-test('nested runWithContext restores parent context after inner returns', () => {
-    const outerOpts = { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES };
+test('nested ThreadContext.run restores parent context after inner returns', () => {
     const innerSpanBytes = bytesFromHex('aabbccddeeff0011');
-    const innerOpts = { traceId: TRACE_ID_BYTES, spanId: innerSpanBytes };
 
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         const outerBefore = decodeHeader(_currentRecordBytes()).spanId;
-        tcRun(() => {
+        new ThreadContext(TRACE_ID_BYTES, innerSpanBytes).run(() => {
             const inner = decodeHeader(_currentRecordBytes()).spanId;
             assert.deepEqual(inner, innerSpanBytes);
-        }, innerOpts);
+        });
         const outerAfter = decodeHeader(_currentRecordBytes()).spanId;
         assert.deepEqual(outerBefore, outerAfter);
         assert.deepEqual(outerAfter, SPAN_ID_BYTES);
-    }, outerOpts);
+    });
 });
 
-test('async work inside runWithContext sees same record after awaits', async () => {
-    await tcRun(async () => {
+test('async work inside ThreadContext.run sees same record after awaits', async () => {
+    await new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(async () => {
         const before = decodeHeader(_currentRecordBytes()).spanId;
         await Promise.resolve();
         const afterMicro = decodeHeader(_currentRecordBytes()).spanId;
@@ -307,22 +290,22 @@ test('async work inside runWithContext sees same record after awaits', async () 
         assert.deepEqual(before, SPAN_ID_BYTES);
         assert.deepEqual(afterMicro, SPAN_ID_BYTES);
         assert.deepEqual(afterMacro, SPAN_ID_BYTES);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
-test('concurrent async runWithContext calls keep contexts isolated', async () => {
+test('concurrent async ThreadContext.run calls keep contexts isolated', async () => {
     const aSpan = bytesFromHex('1111111111111111');
     const bSpan = bytesFromHex('2222222222222222');
 
     async function run(spanBytes) {
-        return tcRun(async () => {
+        return new ThreadContext(TRACE_ID_BYTES, spanBytes).run(async () => {
             const observed = [];
             for (let i = 0; i < 4; i++) {
                 observed.push(decodeHeader(_currentRecordBytes()).spanId);
                 await Promise.resolve();
             }
             return observed;
-        }, { traceId: TRACE_ID_BYTES, spanId: spanBytes });
+        });
     }
 
     const [aObs, bObs] = await Promise.all([run(aSpan), run(bSpan)]);
@@ -347,22 +330,22 @@ test('getProcessContextAttributes rejects non-string entries', () => {
     assert.throws(() => getProcessContextAttributes(['ok', 42]), /must be a string/);
 });
 
-test('enterWithContext attaches the record to the current async scope', async () => {
-    // Provide an outer scope so the enterWith attachment can't leak past
-    // this test: when this outer runWithContext returns, the inner scope
-    // (and anything enterWith did within it) is discarded.
-    await tcRun(() => {
+test('ThreadContext.enter attaches the record to the current async scope', async () => {
+    // Provide an outer scope so the enter() attachment can't leak past
+    // this test: when this outer run() returns, the inner scope (and
+    // anything enter() did within it) is discarded.
+    await new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, SPAN_ID_BYTES);
 
         const newSpan = bytesFromHex('aabbccddeeff0011');
-        tcEnter({ traceId: TRACE_ID_BYTES, spanId: newSpan });
+        new ThreadContext(TRACE_ID_BYTES, newSpan).enter();
         assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, newSpan);
 
         // Subsequent async work in the same scope still sees the new record.
         return Promise.resolve().then(() => {
             assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, newSpan);
         });
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 
     assert.equal(_currentRecordBytes(), undefined);
 });
@@ -402,74 +385,69 @@ test('getProcessContextAttributes is frozen and a defensive copy', () => {
 });
 
 test('clearContext detaches the active record within a scope', () => {
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         assert.ok(_currentRecordBytes());
         clearContext();
         assert.equal(_currentRecordBytes(), undefined);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
-test('after clearContext, getContext returns undefined and isContextTruncated is false', () => {
-    tcRun(() => {
+test('after clearContext, getContext returns undefined', () => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         assert.ok(getContext() !== undefined);
         clearContext();
         assert.equal(getContext(), undefined);
-        assert.equal(tcIsTruncated(), false);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
 test('clearContext is idempotent (calling twice or with no context is a no-op)', () => {
     // Outside any context — should not throw.
     clearContext();
     assert.equal(_currentRecordBytes(), undefined);
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         clearContext();
         clearContext();
         assert.equal(_currentRecordBytes(), undefined);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
-test('runWithContext re-establishes a record after a clearContext', () => {
-    tcRun(() => {
+test('ThreadContext.run re-establishes a record after a clearContext', () => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         clearContext();
         const innerSpan = bytesFromHex('aabbccddeeff0011');
-        tcRun(() => {
+        new ThreadContext(TRACE_ID_BYTES, innerSpan).run(() => {
             assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, innerSpan);
-        }, { traceId: TRACE_ID_BYTES, spanId: innerSpan });
-        // After the inner runWithContext returns, we're back to the
-        // post-clear state in the outer scope: no active record.
+        });
+        // After the inner run() returns, we're back to the post-clear state
+        // in the outer scope: no active record.
         assert.equal(_currentRecordBytes(), undefined);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
-test('enterWithContext re-establishes a record after a clearContext', () => {
-    tcRun(() => {
+test('ThreadContext.enter re-establishes a record after a clearContext', () => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         clearContext();
         const newSpan = bytesFromHex('aabbccddeeff0011');
-        tcEnter({ traceId: TRACE_ID_BYTES, spanId: newSpan });
+        new ThreadContext(TRACE_ID_BYTES, newSpan).enter();
         assert.deepEqual(decodeHeader(_currentRecordBytes()).spanId, newSpan);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
 test('appendAttributes adds entries to the current record', () => {
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['GET']).run(() => {
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['GET']);
-        tcAppend([, , '200']);
+        getContext().appendAttributes([, , '200']);
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['GET', , '200']);
-    }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: ['GET'],
     });
 });
 
 test('appendAttributes is in-place when bytes fit in the slack', () => {
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['xxx']).run(() => {
         // Initial allocation has at least 64 bytes of attrs_data capacity;
         // one "xxx" entry occupies 5. An append of "ab" (4 bytes encoded)
         // fits in the slack, so the append takes the in-place path.
         const before = _currentRecordBytes();
-        tcAppend([, 'ab']);
+        getContext().appendAttributes([, 'ab']);
         const after = _currentRecordBytes();
         assert.deepEqual(decodeAttrs(after), ['xxx', 'ab']);
         assert.equal(after.length, before.length + 2 + 2);
@@ -483,15 +461,11 @@ test('appendAttributes is in-place when bytes fit in the slack', () => {
         assert.deepEqual(after.slice(0, 26), before.slice(0, 26));
         assert.deepEqual(after.slice(28, 33), before.slice(28, 33));
         assert.equal(after[24], 1);  // valid restored to 1 after the dance
-    }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: ['xxx'],
     });
 });
 
 test('appendAttributes grows the record geometrically when slack runs out', () => {
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         // Append 8 × 60-byte values. Each encodes to 62 bytes; 8 of them =
         // 496 bytes total. The initial 64-byte capacity is exhausted quickly;
         // the buffer doubles (64 → 128 → 256 → 512) and ends up with all
@@ -500,97 +474,83 @@ test('appendAttributes grows the record geometrically when slack runs out', () =
         for (let i = 0; i < 8; i++) {
             const append = [];
             append[i] = v;
-            tcAppend(append);
+            getContext().appendAttributes(append);
         }
         const decoded = decodeAttrs(_currentRecordBytes());
         for (let i = 0; i < 8; i++) {
             assert.equal(decoded[i], v, `slot ${i}`);
         }
         assert.equal(decodeHeader(_currentRecordBytes()).attrsDataSize, 8 * 62);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
 test('appendAttributes is a no-op when given an empty array', () => {
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         const before = _currentRecordBytes();
-        tcAppend([]);
+        getContext().appendAttributes([]);
         const after = _currentRecordBytes();
         assert.deepEqual(after, before);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
 test('appendAttributes is a no-op when all slots are null/undefined', () => {
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
         const before = _currentRecordBytes();
-        tcAppend([null, undefined, , null]);
+        getContext().appendAttributes([null, undefined, , null]);
         const after = _currentRecordBytes();
         assert.deepEqual(after, before);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+    });
 });
 
 test('appendAttributes silently drops entries past the 612-byte cap and sets the truncated flag', () => {
     const big = 'a'.repeat(255); // 257 bytes encoded
-    tcRun(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES).run(() => {
+        const ctx = getContext();
         // 2 × 257 = 514 bytes, all fit.
-        tcAppend([big, big]);
-        assert.equal(tcIsTruncated(), false);
+        ctx.appendAttributes([big, big]);
+        assert.equal(ctx.isTruncated(), false);
         // A third 257-byte entry would push to 771 — drops, flag flips.
-        tcAppend([, , big]);
-        assert.equal(tcIsTruncated(), true);
+        ctx.appendAttributes([, , big]);
+        assert.equal(ctx.isTruncated(), true);
         assert.equal(decodeHeader(_currentRecordBytes()).attrsDataSize, 514);
         // A subsequent small entry (e.g. 30 bytes) still fits and is kept;
         // skip-and-continue applies to per-call as well as per-record-cap.
         const small = 'x'.repeat(30);
-        tcAppend([, , , small]);
+        ctx.appendAttributes([, , , small]);
         const decoded = decodeAttrs(_currentRecordBytes());
         assert.equal(decoded[0], big);
         assert.equal(decoded[1], big);
         assert.equal(decoded[2], undefined);
         assert.equal(decoded[3], small);
         // Flag stays true.
-        assert.equal(tcIsTruncated(), true);
-    }, { traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES });
+        assert.equal(ctx.isTruncated(), true);
+    });
 });
 
-test('isContextTruncated returns false outside a context', () => {
-    assert.equal(tcIsTruncated(), false);
-});
-
-test('isContextTruncated returns false for a non-truncated record', () => {
-    tcRun(() => {
-        assert.equal(tcIsTruncated(), false);
-    }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: ['GET', '/x'],
+test('isTruncated returns false for a non-truncated record', () => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['GET', '/x']).run(() => {
+        assert.equal(getContext().isTruncated(), false);
     });
 });
 
 test('isTruncated reflects appended-then-overflowed entries', () => {
-    tcRun(() => {
-        assert.equal(tcIsTruncated(), false);
-        tcAppend([, , 'c'.repeat(255), , , 'd'.repeat(255), , , 'e'.repeat(255)]);
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['a', 'b']).run(() => {
+        const ctx = getContext();
+        assert.equal(ctx.isTruncated(), false);
+        ctx.appendAttributes([, , 'c'.repeat(255), , , 'd'.repeat(255), , , 'e'.repeat(255)]);
         // Three 257-byte appends past the existing ~2 bytes = 771 > 612.
         // At least one must have been dropped.
-        assert.equal(tcIsTruncated(), true);
-    }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: ['a', 'b'],
+        assert.equal(ctx.isTruncated(), true);
     });
 });
 
 test('appendAttributes propagates through async continuations', async () => {
-    await tcRun(async () => {
-        tcAppend([, 'after-await']);
+    await new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['before']).run(async () => {
+        getContext().appendAttributes([, 'after-await']);
         await Promise.resolve();
         // After await, the same wrapper is still in the ALS, and append's
         // effect is observable.
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['before', 'after-await']);
-    }, {
-        traceId: TRACE_ID_BYTES,
-        spanId:  SPAN_ID_BYTES,
-        attributes: ['before'],
     });
 });
 
@@ -618,4 +578,3 @@ test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {
     assert.match(line, /\bGLOBAL\b/, `expected GLOBAL binding, got: ${line.trim()}`);
     assert.match(line, /\bDEFAULT\b/, `expected DEFAULT visibility, got: ${line.trim()}`);
 });
-
