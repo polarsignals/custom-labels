@@ -196,6 +196,15 @@ class CtxWrap : public ObjectWrap {
   // attribute had to be dropped because it would have pushed attrs_data
   // past MAX_ATTRS_DATA_SIZE.
   bool truncated_;
+  // Reentrancy guard for AppendAttributes(). EncodeAttrs calls ToString
+  // on each attribute value, which can execute user JS (e.g. a custom
+  // `toString`) that in turn calls `appendAttributes` on the same
+  // ThreadContext. A reentrant call would mutate attrs_data_size out
+  // from under the outer call's `current_used` snapshot, causing the
+  // outer memcpy to overwrite the reentrant call's bytes and the outer
+  // attrs_data_size write to shrink the record. We reject the reentrant
+  // call instead.
+  bool encoding_;
 };
 
 // Pin the offset of `record_` — the field the reader walks to from the
@@ -218,7 +227,10 @@ CtxWrap::~CtxWrap() {
 }
 
 CtxWrap::CtxWrap(OtelThreadCtxRecord* record, size_t capacity, bool truncated)
-    : record_(record), capacity_(capacity), truncated_(truncated) {}
+    : record_(record),
+      capacity_(capacity),
+      truncated_(truncated),
+      encoding_(false) {}
 
 // Copy exactly `expected_bytes` bytes out of a JS Uint8Array (or subclass such
 // as Buffer) into `out`. Returns false if the value isn't a Uint8Array or its
@@ -261,13 +273,12 @@ bool CtxWrap::EncodeAttrs(Isolate* isolate,
     return false;
   }
 
-  // Phase 1: coerce every present value to a string up front. `ToString`
-  // may invoke user JS (a custom `toString` on the value), which could
-  // re-enter into this ThreadContext (e.g. via `appendAttributes`) and
-  // interleave with our writes to `out`. Doing all such coercion BEFORE
-  // touching `out` keeps the encode phase re-entrancy-free.
-  std::vector<std::pair<uint32_t, Local<String>>> coerced;
-  coerced.reserve(n);
+  // Reserve a conservative upper bound; reallocations are cheap but
+  // unnecessary for the typical small attribute set. `ToString` below can
+  // execute user JS (a custom `toString` on the value); a reentrant
+  // `appendAttributes` on the same ThreadContext is rejected by the
+  // guard in CtxWrap::AppendAttributes, so `out` is safe to mutate here.
+  out->reserve(out->size() + n * 4);
   for (uint32_t i = 0; i < n; ++i) {
     Local<Value> val_val;
     if (!attrs->Get(context, i).ToLocal(&val_val)) return false;
@@ -275,14 +286,6 @@ bool CtxWrap::EncodeAttrs(Isolate* isolate,
     if (val_val->IsUndefined() || val_val->IsNull()) continue;
     Local<String> v;
     if (!val_val->ToString(context).ToLocal(&v)) return false;
-    coerced.emplace_back(i, v);
-  }
-
-  // Phase 2: encode. From here on we don't call any V8 function that can
-  // enter user JS; the record is safe to mutate under the assumption that
-  // no re-entrant AppendAttributes will interleave.
-  out->reserve(out->size() + coerced.size() * 4);
-  for (const auto& [i, v] : coerced) {
 #if NODE_MAJOR_VERSION >= 24
     int v_utf8_len = static_cast<int>(v->Utf8LengthV2(isolate));
 #else
@@ -421,6 +424,24 @@ void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
     isolate->ThrowError("appendAttributes expects 1 argument: attributes");
     return;
   }
+
+  // Reject reentrant AppendAttributes on the same wrap. EncodeAttrs'
+  // `ToString` below can execute user JS, and if that JS calls
+  // `appendAttributes` on this same ThreadContext, the reentrant call
+  // would grow attrs_data_size out from under the outer call's
+  // `current_used` snapshot, causing the outer memcpy to overwrite the
+  // reentrant call's bytes and the outer attrs_data_size write to shrink
+  // the record.
+  if (self->encoding_) {
+    isolate->ThrowError(
+        "reentrant appendAttributes on the same ThreadContext is not allowed");
+    return;
+  }
+  self->encoding_ = true;
+  struct EncodingGuard {
+    CtxWrap* w;
+    ~EncodingGuard() { w->encoding_ = false; }
+  } guard{self};
 
   const size_t current_used = self->record_->attrs_data_size;
   std::vector<uint8_t> appended;
