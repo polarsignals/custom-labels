@@ -668,22 +668,46 @@ constexpr int WRAPPED_OBJECT_OFFSET = 0;
 #endif
 constexpr int TAGGED_SIZE = v8::internal::kApiTaggedSize;
 
+// sizeof(node::ObjectWrap). Given a pointer to a CtxWrap — or any other
+// ObjectWrap-derived C++ object attached to a JSObject via the V8
+// wrapped-object slot — add this offset to reach the derived class's own
+// fields. For CtxWrap, that's `record_` (see the static_assert on its
+// offset above).
+constexpr int NATIVE_WRAP_FIELDS_OFFSET =
+    static_cast<int>(sizeof(node::ObjectWrap));
+
+// V8 JSMap layout: kTableOffset within the JSMap object holds a tagged
+// pointer to the backing OrderedHashMap table. Not exposed in V8's
+// public headers; kept in sync with
+// deps/v8/src/objects/js-collection.h (JSCollection::kTableOffset)
+// and the torque-generated JSCollection layout.
+constexpr int JS_MAP_TABLE_OFFSET = 0x18;
+
+// V8 OrderedHashMap layout: the on-heap table starts with a 16-byte
+// header before the element_count / deleted_element_count /
+// number_of_buckets fields. Not exposed in V8's public headers; kept in
+// sync with deps/v8/src/objects/ordered-hash-table.h
+// (OrderedHashTable base layout).
+constexpr int ORDERED_HASH_MAP_HEADER_SIZE = 0x10;
+
 NODE_MODULE_INIT() {
   CtxWrap::Init(exports);
   NODE_SET_METHOD(exports, "storeAls", StoreAls);
   NODE_SET_METHOD(exports, "getStoredAlsHash", GetStoredAlsHash);
 
   Isolate* isolate = Isolate::GetCurrent();
-  exports
-      ->Set(context,
-            String::NewFromUtf8Literal(isolate, "wrappedObjectOffset"),
-            Integer::New(isolate, WRAPPED_OBJECT_OFFSET))
-      .FromJust();
-  exports
-      ->Set(context,
-            String::NewFromUtf8Literal(isolate, "taggedSize"),
-            Integer::New(isolate, TAGGED_SIZE))
-      .FromJust();
+  auto publish_int = [&](const char* name, int value) {
+    exports
+        ->Set(context,
+              String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              Integer::New(isolate, value))
+        .FromJust();
+  };
+  publish_int("jsMapTableOffset", JS_MAP_TABLE_OFFSET);
+  publish_int("nativeWrapFieldsOffset", NATIVE_WRAP_FIELDS_OFFSET);
+  publish_int("orderedHashMapHeaderSize", ORDERED_HASH_MAP_HEADER_SIZE);
+  publish_int("taggedSize", TAGGED_SIZE);
+  publish_int("wrappedObjectOffset", WRAPPED_OBJECT_OFFSET);
 }
 
 #pragma GCC diagnostic pop

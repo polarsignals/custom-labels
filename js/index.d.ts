@@ -27,6 +27,31 @@ export interface ProcessContextAttributes {
      * and OrderedHashMap-header offsets it walks without hardcoding them.
      */
     readonly 'threadlocal.tagged_size': number;
+
+    /**
+     * `sizeof(node::ObjectWrap)`. Given a pointer to a CtxWrap fetched via
+     * `wrapped_object_offset`, the reader adds this to reach the derived
+     * class's own fields — for CtxWrap, the `record_` pointer sits at
+     * exactly this offset.
+     */
+    readonly 'threadlocal.native_wrap_fields_offset': number;
+
+    /**
+     * Offset within a V8 `JSMap` object of the tagged pointer to its
+     * backing `OrderedHashMap` table (`JSCollection::kTableOffset` in V8).
+     * Not exposed in V8's public headers; the addon carries a build-time
+     * constant kept in sync with Node's private V8 tree.
+     */
+    readonly 'threadlocal.js_map_table_offset': number;
+
+    /**
+     * Size of the header preceding the `element_count` /
+     * `deleted_element_count` / `number_of_buckets` fields inside a V8
+     * `OrderedHashMap`. Not exposed in V8's public headers; the addon
+     * carries a build-time constant kept in sync with Node's private V8
+     * tree.
+     */
+    readonly 'threadlocal.ordered_hash_map_header_size': number;
 }
 
 /**

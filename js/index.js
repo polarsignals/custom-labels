@@ -9,6 +9,9 @@ const SCHEMA_VERSION = 'nodejs_v1_dev';
 // see consistent values.
 let WRAPPED_OBJECT_OFFSET = 24;
 let TAGGED_SIZE = 8;
+let NATIVE_WRAP_FIELDS_OFFSET = 24;
+let JS_MAP_TABLE_OFFSET = 0x18;
+let ORDERED_HASH_MAP_HEADER_SIZE = 0x10;
 
 // Public surface, populated by the Linux branch below. On other
 // platforms these stay as no-op stubs / a sham class.
@@ -21,6 +24,9 @@ if (process.platform === 'linux') {
     const addon = bindings('customlabels');
     WRAPPED_OBJECT_OFFSET = addon.wrappedObjectOffset;
     TAGGED_SIZE = addon.taggedSize;
+    NATIVE_WRAP_FIELDS_OFFSET = addon.nativeWrapFieldsOffset;
+    JS_MAP_TABLE_OFFSET = addon.jsMapTableOffset;
+    ORDERED_HASH_MAP_HEADER_SIZE = addon.orderedHashMapHeaderSize;
 
     ThreadContext = addon.ThreadContext;
 
@@ -135,6 +141,9 @@ function getProcessContextAttributes(keys) {
         'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
         'threadlocal.wrapped_object_offset': WRAPPED_OBJECT_OFFSET,
         'threadlocal.tagged_size': TAGGED_SIZE,
+        'threadlocal.native_wrap_fields_offset': NATIVE_WRAP_FIELDS_OFFSET,
+        'threadlocal.js_map_table_offset': JS_MAP_TABLE_OFFSET,
+        'threadlocal.ordered_hash_map_header_size': ORDERED_HASH_MAP_HEADER_SIZE,
     });
 }
 
