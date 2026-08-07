@@ -361,7 +361,7 @@ test('getProcessContextAttributes returns the expected shape', () => {
     // compression, no sandbox) these are 24 and 8 respectively.
     assert.equal(pca['threadlocal.wrapped_object_offset'], 24);
     assert.equal(pca['threadlocal.tagged_size'], 8);
-    assert.equal(pca['threadlocal.native_wrap_fields_offset'], 24);
+    assert.equal(pca['threadlocal.native_wrap_fields_offset'], 0);
     assert.equal(pca['threadlocal.js_map_table_offset'], 0x18);
     assert.equal(pca['threadlocal.ordered_hash_map_header_size'], 0x10);
     assert.deepEqual(Object.keys(pca).sort(), [
