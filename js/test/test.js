@@ -560,6 +560,41 @@ test('appendAttributes propagates through async continuations', async () => {
     });
 });
 
+test('invalidate flips the record\'s valid byte to 0 in place', () => {
+    // The invalidation is visible across every async-context frame that
+    // holds the same ThreadContext reference — nothing about the async
+    // scope changes, only the shared record's `valid` header byte.
+    const ctx = new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES);
+    ctx.run(() => {
+        assert.equal(decodeHeader(_currentRecordBytes()).valid, 1);
+        ctx.invalidate();
+        assert.equal(decodeHeader(_currentRecordBytes()).valid, 0);
+    });
+});
+
+test('invalidate is idempotent', () => {
+    const ctx = new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES);
+    ctx.run(() => {
+        ctx.invalidate();
+        ctx.invalidate();
+        assert.equal(decodeHeader(_currentRecordBytes()).valid, 0);
+    });
+});
+
+test('appendAttributes after invalidate mutates attrs_data but leaves valid=0', () => {
+    // The addon separates `valid` from the attrs-append path: an
+    // invalidated record's `attrs_data_size` can still grow, but readers
+    // MUST honor `valid == 0` and ignore the record anyway.
+    const ctx = new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES);
+    ctx.run(() => {
+        ctx.invalidate();
+        ctx.appendAttributes([, 'late']);
+        const hdr = decodeHeader(_currentRecordBytes());
+        assert.equal(hdr.valid, 0);
+        assert.equal(hdr.attrsDataSize, 6); // key(1) + len(1) + 'late'(4)
+    });
+});
+
 test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {
     const addon = path.join(__dirname, '..', 'build', 'Release', 'customlabels.node');
     if (!require('node:fs').existsSync(addon)) {

@@ -79,6 +79,19 @@ export interface ThreadContext {
     appendAttributes(attributes: Array<string | null | undefined> | undefined): void;
 
     /**
+     * Mark this record's underlying `valid` byte as 0 in place. Every
+     * async-context frame that still holds this `ThreadContext` reference —
+     * including those that inherited it verbatim from a parent frame —
+     * will subsequently present a record with `valid = 0` to a reader, so
+     * this one call drops the record out of scope for every such frame at
+     * once. Intended for the span-finish path, where clearing only the
+     * current frame's context via {@link clearContext} would leave
+     * sibling / detached-continuation frames still exposing the finished
+     * span's trace / span IDs. Idempotent.
+     */
+    invalidate(): void;
+
+    /**
      * True if at any point in this context's lifetime — either at
      * construction or in a subsequent {@link appendAttributes} call — at
      * least one attribute had to be dropped because it would have pushed

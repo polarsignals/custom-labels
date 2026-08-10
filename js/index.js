@@ -95,6 +95,7 @@ if (process.platform === 'linux') {
     // AsyncLocalStorage.
     class NoopThreadContext {
         appendAttributes() {}
+        invalidate() {}
         isTruncated() { return false; }
         debugBytes() { return new Uint8Array(0); }
         enter() {}

@@ -126,6 +126,16 @@ Instance methods:
   internal record pointer in place — the JS object stays the same — so no
   per-frame divergence.
 
+- **`invalidate()`** — mark this record's `valid` byte as 0 in place.
+  Every async-context frame that still holds this `ThreadContext`
+  reference (including those that merely inherited it verbatim from a
+  parent frame) will subsequently present the same shared record to a
+  reader, so this one call drops the record out of scope for every such
+  frame at once. Intended for the span-finish path, where clearing only
+  the current frame's context via `clearContext()` would leave
+  sibling and detached-continuation frames still exposing the finished
+  span. Idempotent.
+
 - **`isTruncated()`** — returns `true` if at any point in this record's
   lifetime — either at construction or in a subsequent `appendAttributes`
   call — at least one attribute had to be dropped because it would have
