@@ -4,7 +4,7 @@
     "description": "Node.js writer for the OpenTelemetry thread-context record (OTEP-4947), discoverable via AsyncLocalStorage / AsyncContextFrame.",
     "main": "index.js",
     "scripts": {
-        "test": "node --experimental-async-context-frame --disable-warning=ExperimentalWarning --test test/test.js",
+        "test": "node test/run.js",
         "test:docker": "./test/run-in-docker.sh",
         "install": "node build.js"
     },
