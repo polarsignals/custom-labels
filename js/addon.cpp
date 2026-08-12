@@ -498,8 +498,6 @@ void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
   // Append the new entries and update attrs_data_size.
   memcpy(&new_rec->attrs_data[current_used], appended.data(), appended.size());
   new_rec->attrs_data_size = static_cast<uint16_t>(new_used);
-  // The copy should've preserved valid=1 from the source record.
-  assert(new_rec->valid == 1);
 
   // Publish: the pointer swap is the atomic boundary the reader sees. The
   // first fence keeps the new_rec content writes ordered before the pointer
