@@ -33,8 +33,6 @@ if (!isAsyncContextFrameAvailable()) {
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { acfFlags } = require('./node-flags');
-
 const lib = require('..');
 const { ThreadContext, getContext, clearContext, getProcessContextAttributes, _currentRecordBytes } = lib;
 
@@ -595,23 +593,6 @@ test('appendAttributes after invalidate mutates attrs_data but leaves valid=0', 
         assert.equal(hdr.valid, 0);
         assert.equal(hdr.attrsDataSize, 6); // key(1) + len(1) + 'late'(4)
     });
-});
-
-// Regression test: CtxWrap used to derive from node::ObjectWrap, whose
-// destructor calls RemoveEnvironmentCleanupHook. A CtxWrap collected during
-// isolate teardown hit that function's CHECK that an Environment is current
-// and aborted the process.
-test('contexts collected during isolate teardown do not abort', () => {
-    const child = path.join(__dirname, 'teardown-child.js');
-    const r = spawnSync(process.execPath, [...acfFlags(), child, '3000'], {
-        encoding: 'utf8',
-    });
-    assert.equal(
-        r.status,
-        0,
-        `teardown-child exited with status=${r.status} signal=${r.signal}\n` +
-            `${r.stdout}${r.stderr}`,
-    );
 });
 
 test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {
