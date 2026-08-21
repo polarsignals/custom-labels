@@ -136,7 +136,7 @@ constexpr size_t MIN_INITIAL_CAPACITY = 64 - sizeof(OtelThreadCtxRecord);
 constexpr size_t MAX_ATTRS_DATA_SIZE = 640 - sizeof(OtelThreadCtxRecord);
 
 // Read and write the embedder pointer stored in an object's internal field.
-inline void* GetAlignedPointerFromInternalField(Object* object, int index) {
+static inline void* GetAlignedPointerFromInternalField(Object* object, int index) {
 #if NODE_MAJOR_VERSION >= 26
   return object->GetAlignedPointerFromInternalField(
       index, v8::kEmbedderDataTypeTagDefault);
@@ -145,7 +145,7 @@ inline void* GetAlignedPointerFromInternalField(Object* object, int index) {
 #endif
 }
 
-inline void SetAlignedPointerInInternalField(Local<Object> object,
+static inline void SetAlignedPointerInInternalField(Local<Object> object,
                                              int index,
                                              void* value) {
 #if NODE_MAJOR_VERSION >= 26
@@ -162,9 +162,7 @@ inline void SetAlignedPointerInInternalField(Local<Object> object,
 //
 // Layout note for the reader: `record_` is private to C++ but its byte
 // position within CtxWrap is part of the reader contract. It is the first
-// field of the class, at offset zero. `capacity_` sits after
-// `record_` purely for the writer's own bookkeeping — the reader never
-// touches it.
+// field of the class, at offset given by `threadlocal.native_wrap_fields_offset`. 
 //
 // Deliberately not a node::ObjectWrap as it has a known bug in interaction
 // with GC when numerous instances are created and can abort the process during
@@ -247,16 +245,6 @@ class CtxWrap {
   v8::Global<v8::Object> handle_;
 };
 
-// Pin the offset of `record_` — the field the reader walks to from the
-// JSObject's internal field 0. With no base class it is simply the first
-// member, so the offset is zero and the published
-// `threadlocal.native_wrap_fields_offset` is computed from this.
-static_assert(std::is_standard_layout<CtxWrap>::value,
-              "CtxWrap must stay standard-layout: the reader contract depends "
-              "on offsetof(record_) being well-defined");
-static_assert(offsetof(CtxWrap, record_) == 0,
-              "record_ must be the first field of CtxWrap");
-
 // Head of the live-CtxWrap list for this thread. Node pins each isolate to a
 // thread, and CtxWraps are only ever constructed and destroyed on their own
 // isolate's thread, so a thread-local needs no lock.
@@ -272,12 +260,9 @@ void DrainLiveCtxWraps(void* arg) {
     CtxWrap* next = p->next_;
     p->pprev_ = nullptr;
     p->next_ = nullptr;
-    // Clear the holder's internal field before freeing what it points at, so
-    // nothing can reach a dangling CtxWrap through it — including the
-    // out-of-process reader, which walks exactly this slot. Being on the live
-    // list means V8 has not collected the holder, so the handle is safe to
-    // read here; the WeakCallback path cannot do this and does not need to,
-    // since there the holder is the object being collected.
+    // Clear the holder's internal field before freeing what it points at 
+    // (which is *p), so the out-of-process reader can't read a dangling
+    // pointer after "delete p".
     if (!p->handle_.IsEmpty()) {
       SetAlignedPointerInInternalField(p->handle_.Get(isolate), 0, nullptr);
     }
@@ -792,6 +777,11 @@ constexpr int TAGGED_SIZE = v8::internal::kApiTaggedSize;
 // ever changes.
 constexpr int NATIVE_WRAP_FIELDS_OFFSET =
     static_cast<int>(offsetof(CtxWrap, record_));
+static_assert(std::is_standard_layout<CtxWrap>::value,
+              "CtxWrap must stay standard-layout: the reader contract depends "
+              "on offsetof(record_) being well-defined");
+static_assert(offsetof(CtxWrap, record_) == 0,
+              "record_ must be the first field of CtxWrap");
 
 // V8 JSMap layout: kTableOffset within the JSMap object holds a tagged
 // pointer to the backing OrderedHashMap table. Not exposed in V8's
