@@ -59,7 +59,7 @@
 //! to update this list!
 
 use std::ptr::{null_mut, NonNull};
-use std::{fmt, slice};
+use std::{cell::RefCell, fmt, slice};
 
 /// Low-level interface to the underlying C library.
 pub mod sys {
@@ -379,6 +379,32 @@ impl fmt::Debug for CurrentLabelset {
     }
 }
 
+/// Owns a labelset that was installed implicitly by [`with_label`].
+///
+/// Without this guard the thread-local current-labelset pointer is destroyed
+/// at thread exit without freeing the labelset, which Valgrind reports as a
+/// definite leak.
+struct CurrentLabelsetGuard(*mut sys::Labelset);
+
+impl Drop for CurrentLabelsetGuard {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        unsafe {
+            // custom_labels_free refuses to free the currently installed set,
+            // so uninstall it first.
+            sys::replace(std::ptr::null_mut());
+            sys::free(self.0);
+        }
+    }
+}
+
+thread_local! {
+    static CURRENT_LABELSET_GUARD: RefCell<Option<CurrentLabelsetGuard>> =
+        const { RefCell::new(None) };
+}
+
 /// Set the label for the specified key to the specified
 /// value while the given function is running.
 ///
@@ -396,6 +422,9 @@ where
         if sys::current().is_null() {
             let l = sys::new(0);
             sys::replace(l);
+            CURRENT_LABELSET_GUARD.with(|guard| {
+                *guard.borrow_mut() = Some(CurrentLabelsetGuard(l));
+            });
         }
     }
     struct Guard<'a> {
