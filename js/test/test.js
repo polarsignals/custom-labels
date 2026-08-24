@@ -357,19 +357,17 @@ test('getProcessContextAttributes returns the expected shape', () => {
     assert.deepEqual(pca['threadlocal.attribute_key_map'], keys);
     // V8 layout constants — on Node's standard build (no pointer
     // compression, no sandbox) these are 24 and 8 respectively.
-    assert.equal(pca['threadlocal.wrapped_object_offset'], 24);
+    assert.equal(pca['threadlocal.js_object_record_offset'], 24);
     assert.equal(pca['threadlocal.tagged_size'], 8);
-    assert.equal(pca['threadlocal.native_wrap_fields_offset'], 0);
     assert.equal(pca['threadlocal.js_map_table_offset'], 0x18);
     assert.equal(pca['threadlocal.ordered_hash_map_header_size'], 0x10);
     assert.deepEqual(Object.keys(pca).sort(), [
         'threadlocal.attribute_key_map',
         'threadlocal.js_map_table_offset',
-        'threadlocal.native_wrap_fields_offset',
+        'threadlocal.js_object_record_offset',
         'threadlocal.ordered_hash_map_header_size',
         'threadlocal.schema_version',
         'threadlocal.tagged_size',
-        'threadlocal.wrapped_object_offset',
     ]);
 });
 

@@ -122,9 +122,9 @@ Instance methods:
   returning `true`.
 
   Mutations are visible to every async-context frame that holds the same
-  `ThreadContext` reference. Reallocate-on-append updates the wrapper's
-  internal record pointer in place — the JS object stays the same — so no
-  per-frame divergence.
+  `ThreadContext` reference. Reallocate-on-append re-publishes the record
+  pointer on the same JS object — the object itself is never replaced — so
+  no per-frame divergence.
 
 - **`invalidate()`** — mark this record's `valid` byte as 0 in place.
   Every async-context frame that still holds this `ThreadContext`
@@ -189,20 +189,22 @@ duplicates.
     'threadlocal.schema_version': 'nodejs_v1_dev',
     'threadlocal.attribute_key_map': ['http.method', 'http.route', ...],
     // V8 layout constants captured from the V8 headers the addon was
-    // compiled against — let the reader walk our wrapper and V8's
+    // compiled against — let the reader walk V8's JSObject and
     // OrderedHashMap layout without having to derive these itself from
     // pointer-compression / sandbox build flags.
-    'threadlocal.wrapped_object_offset': 24,
+    'threadlocal.js_map_table_offset': 24,
+    'threadlocal.js_object_record_offset': 24,
+    'threadlocal.ordered_hash_map_header_size': 16,
     'threadlocal.tagged_size': 8,
 }
 ```
 
-Spread it (or copy its entries) into whatever attribute map the
-application hands to its OTEP-4719 process-context publisher. The
-`attribute_key_map` keeps the writer-side index→name mapping in sync with
-what an external reader will use to decode the on-the-wire `key_index`
-bytes; the two layout-constant entries are what the reader needs to walk
-from our V8 wrapper to the underlying record.
+Spread it (or copy its entries) into whatever attribute map the application
+hands to its OTEP-4719 process-context publisher. The `attribute_key_map`
+keeps the writer-side index-to-name mapping in sync with what an external
+reader will use to decode the on-the-wire `key_index` bytes; the
+layout-constant entries are what the reader needs to walk from the V8
+async-context frame to the underlying record.
 
 ## Discovery contract (for reader implementers)
 
@@ -239,15 +241,12 @@ The writer publishes three things the reader needs to find:
   fashion, this also means that the values for a particular thread are fixed
   for the lifetime of the thread and can be cached by a reader.
 
-2. A JavaScript wrapper object (the `ThreadContext` JS class, internally a
-   `node::ObjectWrap` subclass named `CtxWrap` on the C++ side) stored as
-   the value for the ALS instance key inside the current
-   `AsyncContextFrame` (itself the V8 isolate's
-   `ContinuationPreservedEmbedderData`). The wrapper has a single
-   non-inherited field:
-
-   - `OtelThreadCtxRecord *record_` — pointer to the record, placed
-     immediately after the `node::ObjectWrap` base subobject.
+2. A JavaScript wrapper object (the `ThreadContext` JS class) stored as the
+   value for the ALS instance key inside the current `AsyncContextFrame`
+   (itself the V8 isolate's `ContinuationPreservedEmbedderData`). Its
+   internal field 0 holds a raw pointer to the record itself, so the reader
+   reaches the record in a single dereference and needs to know nothing
+   about how the writer allocates or tracks it.
 
 3. The record itself is exactly the OTEP-4947 layout: `trace_id[16]`,
    `span_id[8]`, `valid` (always 1, set during construction), `reserved`,
@@ -256,7 +255,7 @@ The writer publishes three things the reader needs to find:
    allocates exactly that, so there is no trailing padding.
 
 The process-context schema version corresponding to this writer is
-`nodejs_v1` (to be set in `threadlocal.schema_version` of the OTEP-4719
+`nodejs_v1_dev` (to be set in `threadlocal.schema_version` of the OTEP-4719
 process context, by whichever component the application uses to publish
 process context).
 
@@ -280,9 +279,9 @@ if (*ctx->cped_slot == ctx->undefined_addr) return NO_CONTEXT;
 auto* acf = untag<JSMap>(*ctx->cped_slot);
 
 // JS Map -> backing OrderedHashMap. The `table` field sits at offset
-// 3 * sizeof(uintptr_t) inside the JSMap header.
+// `js_map_table_offset` inside the JSMap header.
 auto* table = untag<OrderedHashMap>(
-    *(tagged_ptr*)((char*)acf + 3 * sizeof(uintptr_t)));
+    *(tagged_ptr*)((char*)acf + js_map_table_offset));
 
 // OrderedHashMap is a FixedArray subclass. Layout after its 2-word
 // FixedArray header (map pointer, array-length Smi):
@@ -301,15 +300,12 @@ if (!e) return NO_CONTEXT;           // ALS not present in this ACF
 if (e->value == ctx->undefined_addr) return NO_CONTEXT;  // explicit undefined
 
 // Entry value is the JS wrapper for our ThreadContext. Internal field 0
-// lives at offset 3 * sizeof(uintptr_t) inside the JSObject and holds the
-// raw native pointer to the C++ wrapper directly (low bits zero because
-// the pointer is aligned and Node's V8 has no sandbox).
+// lives at `js_object_record_offset` inside the JSObject and holds the
+// raw native pointer to the record directly (low bits zero because the
+// pointer is aligned and Node's V8 has no sandbox).
 auto* wrap_js = untag<JSObject>(e->value);
-auto* wrap = *(CtxWrap**)((char*)wrap_js + 3 * sizeof(uintptr_t));
-
-// CtxWrap::record_ is the first non-inherited field after the
-// node::ObjectWrap base subobject.
-auto* record = wrap->record_;
+auto* record =
+    *(OtelThreadCtxRecord**)((char*)wrap_js + js_object_record_offset);
 if (record->valid != 1) return NO_CONTEXT;  // mid in-place update; skip
 // trace_id, span_id, and attrs_data[0 .. attrs_data_size) are now usable.
 ```
