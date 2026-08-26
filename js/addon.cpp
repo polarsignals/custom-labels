@@ -166,7 +166,9 @@ static inline void SetAlignedPointerInInternalField(Local<Object> object,
 //
 // Deliberately not a node::ObjectWrap as it has a known bug in interaction
 // with GC when numerous instances are created and can abort the process during
-// isolate teardown. Instances live at shutdown are deleted using DrainLiveCtxWraps.
+// isolate teardown, see https://github.com/nodejs/node/pull/63642 and 
+// https://github.com/nodejs/node/pull/63985. Instances live at shutdown are
+// deleted using DrainLiveCtxWraps.
 class CtxWrap {
  public:
   ~CtxWrap();
