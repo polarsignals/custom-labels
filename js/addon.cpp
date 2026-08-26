@@ -7,7 +7,6 @@
 // finally the record it owns.
 
 #include <node.h>
-#include <node_object_wrap.h>
 #include <v8-internal.h>
 
 #include <stddef.h>
@@ -17,6 +16,7 @@
 
 #include <atomic>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 extern "C" {
@@ -75,7 +75,6 @@ static_assert(offsetof(otel_thread_ctx_nodejs_v1_t, undefined_addr) ==
               "undefined_addr must follow als_identity_hash + padding");
 
 namespace otel_thread_ctx_nodejs {
-using node::ObjectWrap;
 using v8::Array;
 using v8::Context;
 using v8::Function;
@@ -136,18 +135,43 @@ constexpr size_t MIN_INITIAL_CAPACITY = 64 - sizeof(OtelThreadCtxRecord);
 // as best-effort.
 constexpr size_t MAX_ATTRS_DATA_SIZE = 640 - sizeof(OtelThreadCtxRecord);
 
+// Read and write the embedder pointer stored in an object's internal field.
+static inline void* GetAlignedPointerFromInternalField(Object* object, int index) {
+#if NODE_MAJOR_VERSION >= 26
+  return object->GetAlignedPointerFromInternalField(
+      index, v8::kEmbedderDataTypeTagDefault);
+#else
+  return object->GetAlignedPointerFromInternalField(index);
+#endif
+}
+
+static inline void SetAlignedPointerInInternalField(Local<Object> object,
+                                             int index,
+                                             void* value) {
+#if NODE_MAJOR_VERSION >= 26
+  object->SetAlignedPointerInInternalField(
+      index, value, v8::kEmbedderDataTypeTagDefault);
+#else
+  object->SetAlignedPointerInInternalField(index, value);
+#endif
+}
+
 // Wraps a heap-allocated OtelThreadCtxRecord. Lifetime is managed by V8 GC:
 // when no JS code (or AsyncLocalStorage entry) holds a reference, the record
 // is freed.
 //
 // Layout note for the reader: `record_` is private to C++ but its byte
 // position within CtxWrap is part of the reader contract. It is the first
-// field after the node::ObjectWrap base subobject. `capacity_` sits after
-// `record_` purely for the writer's own bookkeeping — the reader never
-// touches it.
-class CtxWrap : public ObjectWrap {
+// field of the class, at offset given by `threadlocal.native_wrap_fields_offset`. 
+//
+// Deliberately not a node::ObjectWrap as it has a known bug in interaction
+// with GC when numerous instances are created and can abort the process during
+// isolate teardown, see https://github.com/nodejs/node/pull/63642 and 
+// https://github.com/nodejs/node/pull/63985. Instances live at shutdown are
+// deleted using DrainLiveCtxWraps.
+class CtxWrap {
  public:
-  ~CtxWrap() override;
+  ~CtxWrap();
   static void Init(Local<Object> exports);
 
   CtxWrap(const CtxWrap&) = delete;
@@ -177,7 +201,13 @@ class CtxWrap : public ObjectWrap {
 
   CtxWrap(OtelThreadCtxRecord* record, size_t capacity, bool truncated);
 
-  // The three fields are kept in one access section because C++ leaves
+  // Attach to the holder JSObject: store `this` in internal field 0 and take
+  // a weak handle on the holder, so V8 deletes us once it collects it.
+  void Wrap(Local<Object> holder);
+  static CtxWrap* Unwrap(Local<Object> holder);
+  static void WeakCallback(const v8::WeakCallbackInfo<CtxWrap>& data);
+
+  // The fields are kept in one access section because C++ leaves
   // the relative layout of fields in different access controls
   // implementation-defined. `record_` must come first — its offset
   // within CtxWrap is part of the reader contract (see the
@@ -206,32 +236,82 @@ class CtxWrap : public ObjectWrap {
   // attrs_data_size write to shrink the record. We reject the reentrant
   // call instead.
   bool encoding_;
+  // Intrusive doubly-linked list of the CtxWraps still alive on this thread,
+  // threaded through g_live_ctx_wraps. `pprev_` is the address of the pointer
+  // currently referencing us, so unlinking needs no head/non-head branch;
+  // `pprev_ == nullptr` is the "already detached" sentinel set by the drain
+  // hook before it deletes us.
+  CtxWrap** pprev_;
+  CtxWrap* next_;
+  // Weak handle on the holder object; owns this CtxWrap.
+  v8::Global<v8::Object> handle_;
 };
 
-// Pin the offset of `record_` — the field the reader walks to from the
-// JSObject's internal field 0. We document it as "the first field after
-// the node::ObjectWrap base subobject", so equality with
-// sizeof(node::ObjectWrap) is the invariant. `offsetof` on a non-
-// standard-layout type (CtxWrap has private fields and inherits from
-// ObjectWrap) is conditionally supported per the standard but accepted
-// by every compiler this addon targets; suppress -Winvalid-offsetof so
-// the static_assert compiles cleanly under strict warning flags.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-static_assert(offsetof(CtxWrap, record_) == sizeof(node::ObjectWrap),
-              "record_ must be the first field after the ObjectWrap base "
-              "subobject");
-#pragma GCC diagnostic pop
+// Head of the live-CtxWrap list for this thread. Node pins each isolate to a
+// thread, and CtxWraps are only ever constructed and destroyed on their own
+// isolate's thread, so a thread-local needs no lock.
+thread_local CtxWrap* g_live_ctx_wraps = nullptr;
+
+// Delete every CtxWrap V8 has not collected yet. Registered once per isolate
+// from Init() as an environment shutdown hook.
+void DrainLiveCtxWraps(void* arg) {
+  auto* isolate = static_cast<Isolate*>(arg);
+  v8::HandleScope scope(isolate);
+  CtxWrap* p = g_live_ctx_wraps;
+  while (p != nullptr) {
+    CtxWrap* next = p->next_;
+    p->pprev_ = nullptr;
+    p->next_ = nullptr;
+    // Clear the holder's internal field before freeing what it points at 
+    // (which is *p), so the out-of-process reader can't read a dangling
+    // pointer after "delete p".
+    if (!p->handle_.IsEmpty()) {
+      SetAlignedPointerInInternalField(p->handle_.Get(isolate), 0, nullptr);
+    }
+    delete p;
+    p = next;
+  }
+  g_live_ctx_wraps = nullptr;
+}
 
 CtxWrap::~CtxWrap() {
+  // pprev_ != nullptr means we are still on the live list, i.e. V8 collected
+  // the holder and we got here from WeakCallback. If it is null the drain hook
+  // is walking the list and has already detached us.
+  if (pprev_ != nullptr) {
+    *pprev_ = next_;
+    if (next_ != nullptr) next_->pprev_ = pprev_;
+  }
   free(record_);
+}
+
+void CtxWrap::WeakCallback(const v8::WeakCallbackInfo<CtxWrap>& data) {
+  delete data.GetParameter();
+}
+
+void CtxWrap::Wrap(Local<Object> holder) {
+  Isolate* isolate = Isolate::GetCurrent();
+  SetAlignedPointerInInternalField(holder, 0, this);
+  handle_.Reset(isolate, holder);
+  handle_.SetWeak(this, &WeakCallback, v8::WeakCallbackType::kParameter);
+  next_ = g_live_ctx_wraps;
+  pprev_ = &g_live_ctx_wraps;
+  if (next_ != nullptr) next_->pprev_ = &next_;
+  g_live_ctx_wraps = this;
+}
+
+CtxWrap* CtxWrap::Unwrap(Local<Object> holder) {
+  if (holder->InternalFieldCount() < 1) return nullptr;
+  return static_cast<CtxWrap*>(GetAlignedPointerFromInternalField(*holder, 0));
 }
 
 CtxWrap::CtxWrap(OtelThreadCtxRecord* record, size_t capacity, bool truncated)
     : record_(record),
       capacity_(capacity),
       truncated_(truncated),
-      encoding_(false) {}
+      encoding_(false),
+      pprev_(nullptr),
+      next_(nullptr) {}
 
 // Copy exactly `expected_bytes` bytes out of a JS Uint8Array (or subclass such
 // as Buffer) into `out`. Returns false if the value isn't a Uint8Array or its
@@ -416,7 +496,7 @@ void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
   Isolate* isolate = args.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
 
-  CtxWrap* self = ObjectWrap::Unwrap<CtxWrap>(args.This());
+  CtxWrap* self = CtxWrap::Unwrap(args.This());
   if (!self) {
     isolate->ThrowError("not a ThreadContext");
     return;
@@ -525,7 +605,7 @@ void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
 // still exposing the finished span. Idempotent; safe to call multiple
 // times.
 void CtxWrap::Invalidate(const FunctionCallbackInfo<Value>& args) {
-  CtxWrap* self = ObjectWrap::Unwrap<CtxWrap>(args.This());
+  CtxWrap* self = CtxWrap::Unwrap(args.This());
   if (!self) {
     args.GetIsolate()->ThrowError("not a ThreadContext");
     return;
@@ -539,7 +619,7 @@ void CtxWrap::Invalidate(const FunctionCallbackInfo<Value>& args) {
 // CtxWrap::New() if the initial set didn't fit, or by any subsequent
 // CtxWrap::AppendAttributes() call.
 void CtxWrap::IsTruncated(const FunctionCallbackInfo<Value>& args) {
-  CtxWrap* self = ObjectWrap::Unwrap<CtxWrap>(args.This());
+  CtxWrap* self = CtxWrap::Unwrap(args.This());
   if (!self) {
     args.GetIsolate()->ThrowError("not a ThreadContext");
     return;
@@ -552,7 +632,7 @@ void CtxWrap::IsTruncated(const FunctionCallbackInfo<Value>& args) {
 // API; intended for tests and out-of-process-reader development.
 void CtxWrap::DebugBytes(const FunctionCallbackInfo<Value>& args) {
   Isolate* isolate = args.GetIsolate();
-  CtxWrap* self = ObjectWrap::Unwrap<CtxWrap>(args.This());
+  CtxWrap* self = CtxWrap::Unwrap(args.This());
   if (!self) {
     isolate->ThrowError("not a ThreadContext");
     return;
@@ -567,6 +647,7 @@ void CtxWrap::DebugBytes(const FunctionCallbackInfo<Value>& args) {
 void CtxWrap::Init(Local<Object> exports) {
   Isolate* isolate = Isolate::GetCurrent();
   Local<Context> context = isolate->GetCurrentContext();
+  node::AddEnvironmentCleanupHook(isolate, DrainLiveCtxWraps, isolate);
 
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
   tpl->SetClassName(String::NewFromUtf8Literal(isolate, "ThreadContext"));
@@ -689,13 +770,18 @@ constexpr int WRAPPED_OBJECT_OFFSET = 0;
 #endif
 constexpr int TAGGED_SIZE = v8::internal::kApiTaggedSize;
 
-// sizeof(node::ObjectWrap). Given a pointer to a CtxWrap — or any other
-// ObjectWrap-derived C++ object attached to a JSObject via the V8
-// wrapped-object slot — add this offset to reach the derived class's own
-// fields. For CtxWrap, that's `record_` (see the static_assert on its
-// offset above).
+// Given a pointer to a CtxWrap — reached from the JSObject's V8
+// wrapped-object slot — add this offset to arrive at `record_`. CtxWrap has
+// no base class, so `record_` is its first member and the offset is zero;
+// computing it with offsetof keeps the published value correct if the layout
+// ever changes.
 constexpr int NATIVE_WRAP_FIELDS_OFFSET =
-    static_cast<int>(sizeof(node::ObjectWrap));
+    static_cast<int>(offsetof(CtxWrap, record_));
+static_assert(std::is_standard_layout<CtxWrap>::value,
+              "CtxWrap must stay standard-layout: the reader contract depends "
+              "on offsetof(record_) being well-defined");
+static_assert(offsetof(CtxWrap, record_) == 0,
+              "record_ must be the first field of CtxWrap");
 
 // V8 JSMap layout: kTableOffset within the JSMap object holds a tagged
 // pointer to the backing OrderedHashMap table. Not exposed in V8's
