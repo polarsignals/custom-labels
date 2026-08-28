@@ -28,6 +28,10 @@ const { ThreadContext } = require('@polarsignals/custom-labels');
 const context = new ThreadContext(
     Buffer.from('4bf92f3577b34da6a3ce929d0e0e4736', 'hex'),
     Buffer.from('00f067aa0ba902b7', 'hex'),
+    // W3C trace-flags byte; 0x01 is the sampled bit. Pass 0 (or omit) if the
+    // sampling decision isn't settled yet and set it later with
+    // setTraceFlags().
+    0x01,
     // attributes is positional: index N here = uint8 key index N in the wire
     // record. Slots set to null/undefined or array holes are skipped. Key
     // names come from threadlocal.attribute_key_map (OTEP-4719) — for this
@@ -53,7 +57,7 @@ The instance's `enter()` method does that without scoping to a callback;
 ```javascript
 const { ThreadContext, getContext, clearContext } = require('@polarsignals/custom-labels');
 
-const context = new ThreadContext(traceId, spanId, ['GET', '/api/v1/widgets']);
+const context = new ThreadContext(traceId, spanId, 0x01, ['GET', '/api/v1/widgets']);
 context.enter();
 // ... later, in the same async context (or a child) ...
 if (getContext() === context) { /* identity check, no byte comparison */ }
@@ -86,7 +90,7 @@ publishProcessContext({
 
 ## API
 
-### `new ThreadContext(traceId, spanId, attributes?)`
+### `new ThreadContext(traceId, spanId, traceFlags?, attributes?)`
 
 Construct a thread-context record. Caller manages the lifetime: the underlying
 native record is freed when no JS or async-context-frame reference survives.
@@ -94,6 +98,12 @@ native record is freed when no JS or async-context-frame reference survives.
 **Parameters:**
 - `traceId` — 16 raw bytes (`Uint8Array`; `Buffer` works as a subclass).
 - `spanId` — 8 raw bytes (`Uint8Array`; `Buffer` works as a subclass).
+- `traceFlags` (optional) — the W3C trace-flags byte accompanying the ids, an
+  integer in 0..255. Defaults to 0, which is what OTEP-4947 prescribes when no
+  flags are known; `setTraceFlags()` can change it afterwards. Bits beyond the
+  ones W3C currently defines (0x01 sampled, 0x02 random-trace-id) are stored as
+  given rather than masked off, because W3C requires unknown flag bits to be
+  propagated. Values outside 0..255 and non-integers throw.
 - `attributes` (optional) — positional `Array<string | null | undefined>`:
   index N is the value for uint8 key index N on the wire. Slots that are
   `null`, `undefined`, or array holes are skipped. Non-string values are
@@ -135,6 +145,14 @@ Instance methods:
   the current frame's context via `clearContext()` would leave
   sibling and detached-continuation frames still exposing the finished
   span. Idempotent.
+
+- **`setTraceFlags(traceFlags)`** — overwrite this record's trace-flags byte
+  in place, same value range as the constructor argument. Intended for writers
+  whose sampling decision is deferred: build the record with the ids as soon
+  as the span starts, leave the flags at 0, and set them once the decision
+  happened. A decision that is later overridden can be written again. The write
+  reaches every async-context frame holding this `ThreadContext`, because they
+  all share one record.
 
 - **`isTruncated()`** — returns `true` if at any point in this record's
   lifetime — either at construction or in a subsequent `appendAttributes`
@@ -264,10 +282,14 @@ The writer publishes three things the reader needs to find:
    about how the writer allocates or tracks it.
 
 3. The record itself is exactly the OTEP-4947 layout: `trace_id[16]`,
-   `span_id[8]`, `valid` (always 1, set during construction), `reserved`,
+   `span_id[8]`, `valid` (always 1, set during construction), `trace_flags`
+   (the W3C trace-flags byte; zero when the writer has no flags to report),
    `attrs_data_size` (uint16), then `attrs_data_size` bytes of attribute
    payload. The total record size is `28 + attrs_data_size`; the writer
    allocates exactly that, so there is no trailing padding.
+
+   `trace_flags` may be updated after the record is published — a writer whose
+   sampling decision is deferred sets it when the decision was made.
 
 The process-context schema version corresponding to this writer is
 `nodejs_v1_dev` (to be set in `threadlocal.schema_version` of the OTEP-4719

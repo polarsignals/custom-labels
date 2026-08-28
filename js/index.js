@@ -94,6 +94,7 @@ if (process.platform === 'linux') {
     class NoopThreadContext {
         appendAttributes() {}
         invalidate() {}
+        setTraceFlags() {}
         isTruncated() { return false; }
         debugBytes() { return new Uint8Array(0); }
         enter() {}
