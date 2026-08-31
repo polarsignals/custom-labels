@@ -7,6 +7,7 @@ The current maintainers of this project are:
 * Frederic Branczyk
 * Ivo Anjo
 * Scott Gerring
+* Attila Szegedi
 
 # Decision-making and Rights of Maintainers
 
