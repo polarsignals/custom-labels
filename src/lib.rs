@@ -59,7 +59,7 @@
 //! to update this list!
 
 use std::ptr::{null_mut, NonNull};
-use std::{fmt, slice};
+use std::{cell::RefCell, fmt, slice};
 
 /// Low-level interface to the underlying C library.
 pub mod sys {
@@ -379,6 +379,25 @@ impl fmt::Debug for CurrentLabelset {
     }
 }
 
+/// Owns a labelset that was installed implicitly by [`with_label`].
+struct CurrentLabelsetGuard(NonNull<sys::Labelset>);
+
+impl Drop for CurrentLabelsetGuard {
+    fn drop(&mut self) {
+        unsafe {
+            // custom_labels_free refuses to free the currently installed set,
+            // so uninstall it first.
+            sys::replace(std::ptr::null_mut());
+            sys::free(self.0.as_ptr());
+        }
+    }
+}
+
+thread_local! {
+    static CURRENT_LABELSET_GUARD: RefCell<Option<CurrentLabelsetGuard>> =
+        const { RefCell::new(None) };
+}
+
 /// Set the label for the specified key to the specified
 /// value while the given function is running.
 ///
@@ -395,7 +414,11 @@ where
     unsafe {
         if sys::current().is_null() {
             let l = sys::new(0);
-            sys::replace(l);
+            let l = NonNull::new(l).expect("failed to allocate current labelset");
+            sys::replace(l.as_ptr());
+            CURRENT_LABELSET_GUARD.with(|guard| {
+                *guard.borrow_mut() = Some(CurrentLabelsetGuard(l));
+            });
         }
     }
     struct Guard<'a> {
@@ -570,5 +593,20 @@ pub mod asynchronous {
                 labelset,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn thread_local_checks() {
+        let worker = std::thread::spawn(|| {
+            with_label("key", "value", || {
+                let _ = 42;
+            });
+        });
+        worker.join().expect("worker thread panicked");
     }
 }
