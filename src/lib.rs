@@ -544,8 +544,9 @@ pub mod asynchronous {
         ///
         /// ```rust
         /// # use custom_labels::Labelset;
+        /// let labels = [("key", "value")];
         /// let mut labelset = Labelset::clone_from_current();
-        /// labelset.extend(i);
+        /// labelset.extend(labels);
         /// ```
         fn with_labels<I, K, V>(self, i: I) -> Labeled<Self>
         where
