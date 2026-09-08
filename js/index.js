@@ -7,7 +7,7 @@ const SCHEMA_VERSION = 'nodejs_v1_dev';
 // build (no V8 pointer compression, no sandbox) — the reader is Linux-only
 // per the OTEP anyway, so non-Linux callers republishing process context
 // see consistent values.
-let JS_OBJECT_RECORD_OFFSET = 24;
+let JS_OBJECT_RECORD_OFFSET = 0x18;
 let TAGGED_SIZE = 8;
 let JS_MAP_TABLE_OFFSET = 0x18;
 let ORDERED_HASH_MAP_HEADER_SIZE = 0x10;

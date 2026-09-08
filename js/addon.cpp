@@ -830,9 +830,7 @@ void GetStoredAlsHash(const FunctionCallbackInfo<Value>& args) {
 // field 0, which we set via SetAlignedPointerInInternalField and the reader
 // dereferences. Note it locates the *pointer*, not the record: the reader adds
 // it to the JSObject address and then loads. It depends on V8's
-// pointer-compression and sandbox build flags (kJSObjectHeaderSize = 3 *
-// kApiTaggedSize, plus the embedder-data-slot external-pointer offset of
-// either 0 or kApiTaggedSize depending on V8_ENABLE_SANDBOX).
+// pointer-compression and sandbox build flags.
 //
 // `tagged_size` is V8's tagged pointer width (4 with pointer compression,
 // 8 without). Together these are sufficient to derive every other V8

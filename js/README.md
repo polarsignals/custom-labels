@@ -189,9 +189,11 @@ duplicates.
     'threadlocal.schema_version': 'nodejs_v1_dev',
     'threadlocal.attribute_key_map': ['http.method', 'http.route', ...],
     // V8 layout constants captured from the V8 headers the addon was
-    // compiled against — let the reader walk V8's JSObject and
+    // compiled against. These let the reader walk V8's JSObject and
     // OrderedHashMap layout without having to derive these itself from
-    // pointer-compression / sandbox build flags.
+    // various build flags.
+    // NOTE: the values here are documentation examples and a reader should
+    // always read the actual values and not assume the examples here.
     'threadlocal.js_map_table_offset': 24,
     'threadlocal.js_object_record_offset': 24,
     'threadlocal.ordered_hash_map_header_size': 16,
