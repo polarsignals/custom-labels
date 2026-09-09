@@ -223,6 +223,14 @@ The writer publishes three things the reader needs to find:
      V8 updates live as it switches between continuations. Lets the reader
      skip the V8-internal-symbol lookup that would otherwise be needed to
      find the current isolate.
+
+     An all-zero value here means the addon has published nothing on this
+     thread, or has torn it down again, and none of the other three fields may
+     be used. No live isolate has its CPED slot at address zero, and this is
+     the pointer the reader dereferences first, so testing it needs no
+     assumption about any other field. The addon writes it last when publishing
+     and clears it first on teardown, so its zero/nonzero value is always on
+     the safe side of the fields it guards.
    - offset `sizeof(void *)`, size `sizeof(void *)` — `als_handle`, a
      `v8::Global<v8::Object>` referring to the `AsyncLocalStorage`
      instance the writer uses. Its underlying representation is a single
@@ -238,10 +246,15 @@ The writer publishes three things the reader needs to find:
      ThreadContext) and the reader skips. Avoids reading garbage when the
      slot happens to hold undefined.
 
-  All four fields are fixed for a particular V8 isolate once computed.
-  Since the Node.js model is to associate an isolate with a thread in a 1:1
-  fashion, this also means that the values for a particular thread are fixed
-  for the lifetime of the thread and can be cached by a reader.
+
+  All four fields are fixed while a particular V8 isolate lives, but they are
+  not written only once: the addon populates them when the hook is installed
+  and zeroes them again at teardown. A reader must therefore re-read the struct
+  on every sample rather than caching field values; one holding a
+  pre-teardown copy would go on walking a dead isolate's `cped_slot`, and
+  caching `undefined_addr` specifically defeats the liveness check above. What
+  is worth caching is the *location* of the thread-local: the module and TLS
+  offset.
 
 2. A JavaScript wrapper object (the `ThreadContext` JS class) stored as the
    value for the ALS instance key inside the current `AsyncContextFrame`
@@ -275,6 +288,9 @@ extract).
 
 ```cpp
 auto* ctx = read_tls<otel_thread_ctx_nodejs_v1_t>();
+// Zero cped_slot means nothing is published on this thread (never was, or
+// torn down again), so no other field may be used.
+if (ctx->cped_slot == 0) return NO_CONTEXT;
 if (*ctx->cped_slot == ctx->undefined_addr) return NO_CONTEXT;
 
 // CPED -> current AsyncContextFrame (a JS Map).
