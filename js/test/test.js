@@ -54,7 +54,7 @@ function decodeHeader(bytes) {
         traceId: bytes.slice(0, 16),
         spanId: bytes.slice(16, 24),
         valid: bytes[24],
-        reserved: bytes[25],
+        traceFlags: bytes[25],
         attrsDataSize,
     };
 }
@@ -77,9 +77,9 @@ function decodeAttrs(bytes) {
     return out;
 }
 
-function captureBytes({ traceId, spanId, attributes } = {}) {
+function captureBytes({ traceId, spanId, traceFlags, attributes } = {}) {
     let bytes;
-    new ThreadContext(traceId, spanId, attributes).run(() => { bytes = _currentRecordBytes(); });
+    new ThreadContext(traceId, spanId, traceFlags, attributes).run(() => { bytes = _currentRecordBytes(); });
     return bytes;
 }
 
@@ -89,7 +89,7 @@ test('traceId/spanId accepted as Uint8Array', () => {
     assert.deepEqual(hdr.traceId, TRACE_ID_BYTES);
     assert.deepEqual(hdr.spanId, SPAN_ID_BYTES);
     assert.equal(hdr.valid, 1);
-    assert.equal(hdr.reserved, 0);
+    assert.equal(hdr.traceFlags, 0);
     assert.equal(hdr.attrsDataSize, 0);
 });
 
@@ -225,7 +225,7 @@ test('attrs sets past the 612-byte cap are truncated (entries past the limit dro
     const d = 'd'.repeat(30);
     let bytes;
     let truncated;
-    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, [a, b, c, d]).run(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, undefined, [a, b, c, d]).run(() => {
         bytes = _currentRecordBytes();
         truncated = getContext().isTruncated();
     });
@@ -438,7 +438,7 @@ test('ThreadContext.enter re-establishes a record after a clearContext', () => {
 });
 
 test('appendAttributes adds entries to the current record', () => {
-    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['GET']).run(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, undefined, ['GET']).run(() => {
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['GET']);
         getContext().appendAttributes([, , '200']);
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['GET', , '200']);
@@ -446,7 +446,7 @@ test('appendAttributes adds entries to the current record', () => {
 });
 
 test('appendAttributes is in-place when bytes fit in the slack', () => {
-    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['xxx']).run(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, undefined, ['xxx']).run(() => {
         // Initial allocation has at least 64 bytes of attrs_data capacity;
         // one "xxx" entry occupies 5. An append of "ab" (4 bytes encoded)
         // fits in the slack, so the append takes the in-place path.
@@ -458,7 +458,7 @@ test('appendAttributes is in-place when bytes fit in the slack', () => {
         // The header up to attrs_data_size and the original entry are
         // untouched. attrs_data_size itself legitimately changes (5 → 9),
         // so we skip it. We can't observe in-place vs reallocate identity
-        // from JS, but the unchanged trace_id/span_id/valid/reserved bytes
+        // from JS, but the unchanged trace_id/span_id/valid/trace_flags bytes
         // plus the unchanged "xxx" entry are consistent with the in-place
         // path; a behavioral assertion is the closest the JS layer can
         // make.
@@ -532,13 +532,13 @@ test('appendAttributes silently drops entries past the 612-byte cap and sets the
 });
 
 test('isTruncated returns false for a non-truncated record', () => {
-    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['GET', '/x']).run(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, undefined, ['GET', '/x']).run(() => {
         assert.equal(getContext().isTruncated(), false);
     });
 });
 
 test('isTruncated reflects appended-then-overflowed entries', () => {
-    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['a', 'b']).run(() => {
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, undefined, ['a', 'b']).run(() => {
         const ctx = getContext();
         assert.equal(ctx.isTruncated(), false);
         ctx.appendAttributes([, , 'c'.repeat(255), , , 'd'.repeat(255), , , 'e'.repeat(255)]);
@@ -549,12 +549,74 @@ test('isTruncated reflects appended-then-overflowed entries', () => {
 });
 
 test('appendAttributes propagates through async continuations', async () => {
-    await new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, ['before']).run(async () => {
+    await new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, undefined, ['before']).run(async () => {
         getContext().appendAttributes([, 'after-await']);
         await Promise.resolve();
         // After await, the same wrapper is still in the ALS, and append's
         // effect is observable.
         assert.deepEqual(decodeAttrs(_currentRecordBytes()), ['before', 'after-await']);
+    });
+});
+
+test('traceFlags defaults to 0 when not supplied', () => {
+    const hdr = decodeHeader(captureBytes({ traceId: TRACE_ID_BYTES, spanId: SPAN_ID_BYTES }));
+    assert.equal(hdr.traceFlags, 0);
+});
+
+test('traceFlags writes the byte given at construction', () => {
+    let bytes;
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, 0x01).run(() => { bytes = _currentRecordBytes(); });
+    assert.equal(decodeHeader(bytes).traceFlags, 0x01);
+});
+
+test('traceFlags keeps bits W3C has not defined rather than masking them off', () => {
+    let bytes;
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, 0xff).run(() => { bytes = _currentRecordBytes(); });
+    assert.equal(decodeHeader(bytes).traceFlags, 0xff);
+});
+
+test('traceFlags coexists with attributes in the fourth argument', () => {
+    let bytes;
+    new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, 0x03, ['v0']).run(() => { bytes = _currentRecordBytes(); });
+    assert.equal(decodeHeader(bytes).traceFlags, 0x03);
+    assert.deepEqual(decodeAttrs(bytes), ['v0']);
+});
+
+test('traceFlags rejects non-integers and out-of-range values', () => {
+    for (const bad of [-1, 256, 1.5, NaN, '1']) {
+        assert.throws(() => new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, bad),
+            /traceFlags must be an integer in 0\.\.255/, `expected ${String(bad)} to be rejected`);
+    }
+});
+
+test('setTraceFlags overwrites in place, visible on the shared record', () => {
+    // The deferred-sampling case: the record is built before the sampled bit
+    // is known, and every frame holding this context must see the update.
+    const ctx = new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES);
+    ctx.run(() => {
+        assert.equal(decodeHeader(_currentRecordBytes()).traceFlags, 0);
+        ctx.setTraceFlags(0x01);
+        assert.equal(decodeHeader(_currentRecordBytes()).traceFlags, 0x01);
+    });
+});
+
+test('traceFlags survives an append that reallocates the record', () => {
+    const ctx = new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES, 0x01);
+    ctx.run(() => {
+        ctx.appendAttributes([undefined, 'x'.repeat(200)]);
+        ctx.appendAttributes([undefined, undefined, 'y'.repeat(200)]);
+        const hdr = decodeHeader(_currentRecordBytes());
+        assert.equal(hdr.traceFlags, 0x01);
+        assert.equal(hdr.valid, 1);
+    });
+});
+
+test('setTraceFlags still reaches the record after a reallocation', () => {
+    const ctx = new ThreadContext(TRACE_ID_BYTES, SPAN_ID_BYTES);
+    ctx.run(() => {
+        ctx.appendAttributes([undefined, 'x'.repeat(300)]);
+        ctx.setTraceFlags(0x03);
+        assert.equal(decodeHeader(_currentRecordBytes()).traceFlags, 0x03);
     });
 });
 
