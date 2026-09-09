@@ -13,13 +13,15 @@ export interface ProcessContextAttributes {
     readonly 'threadlocal.attribute_key_map': readonly string[];
 
     /**
-     * Byte offset within a V8 JSObject where internal field 0 lives — the
-     * slot the addon sets via `SetAlignedPointerInInternalField` and that
-     * the reader dereferences to recover the C++ wrapper pointer. Captured
-     * from the V8 headers at addon-compile time so the reader doesn't have
-     * to derive it from V8's pointer-compression / sandbox build flags.
+     * Byte offset, within the V8 JSObject holding a `ThreadContext`, of the
+     * slot holding the pointer to its record — internal field 0, which the
+     * addon sets via `SetAlignedPointerInInternalField`. It locates the
+     * pointer, not the record: add it to the JSObject address, then load.
+     * Captured from the V8 headers at addon-compile time so the reader
+     * doesn't have to derive it from V8's pointer-compression / sandbox
+     * build flags.
      */
-    readonly 'threadlocal.wrapped_object_offset': number;
+    readonly 'threadlocal.js_object_record_offset': number;
 
     /**
      * V8's tagged-pointer width in bytes (4 with pointer compression, 8
@@ -27,14 +29,6 @@ export interface ProcessContextAttributes {
      * and OrderedHashMap-header offsets it walks without hardcoding them.
      */
     readonly 'threadlocal.tagged_size': number;
-
-    /**
-     * `sizeof(node::ObjectWrap)`. Given a pointer to a CtxWrap fetched via
-     * `wrapped_object_offset`, the reader adds this to reach the derived
-     * class's own fields — for CtxWrap, the `record_` pointer sits at
-     * exactly this offset.
-     */
-    readonly 'threadlocal.native_wrap_fields_offset': number;
 
     /**
      * Offset within a V8 `JSMap` object of the tagged pointer to its

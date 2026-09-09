@@ -7,9 +7,8 @@ const SCHEMA_VERSION = 'nodejs_v1_dev';
 // build (no V8 pointer compression, no sandbox) — the reader is Linux-only
 // per the OTEP anyway, so non-Linux callers republishing process context
 // see consistent values.
-let WRAPPED_OBJECT_OFFSET = 24;
+let JS_OBJECT_RECORD_OFFSET = 0x18;
 let TAGGED_SIZE = 8;
-let NATIVE_WRAP_FIELDS_OFFSET = 0;
 let JS_MAP_TABLE_OFFSET = 0x18;
 let ORDERED_HASH_MAP_HEADER_SIZE = 0x10;
 
@@ -22,9 +21,8 @@ let clearContext;
 if (process.platform === 'linux') {
     const bindings = require('bindings');
     const addon = bindings('customlabels');
-    WRAPPED_OBJECT_OFFSET = addon.wrappedObjectOffset;
+    JS_OBJECT_RECORD_OFFSET = addon.jsObjectRecordOffset;
     TAGGED_SIZE = addon.taggedSize;
-    NATIVE_WRAP_FIELDS_OFFSET = addon.nativeWrapFieldsOffset;
     JS_MAP_TABLE_OFFSET = addon.jsMapTableOffset;
     ORDERED_HASH_MAP_HEADER_SIZE = addon.orderedHashMapHeaderSize;
 
@@ -140,9 +138,8 @@ function getProcessContextAttributes(keys) {
     return Object.freeze({
         'threadlocal.schema_version': SCHEMA_VERSION,
         'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
-        'threadlocal.wrapped_object_offset': WRAPPED_OBJECT_OFFSET,
+        'threadlocal.js_object_record_offset': JS_OBJECT_RECORD_OFFSET,
         'threadlocal.tagged_size': TAGGED_SIZE,
-        'threadlocal.native_wrap_fields_offset': NATIVE_WRAP_FIELDS_OFFSET,
         'threadlocal.js_map_table_offset': JS_MAP_TABLE_OFFSET,
         'threadlocal.ordered_hash_map_header_size': ORDERED_HASH_MAP_HEADER_SIZE,
     });

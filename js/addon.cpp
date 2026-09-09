@@ -3,8 +3,9 @@
 // (CtxWrap) and stored in an AsyncLocalStorage instance; an out-of-process
 // reader discovers it by walking the V8 isolate's
 // ContinuationPreservedEmbedderData to the AsyncContextFrame (a JS Map),
-// looking up the ALS instance as the key, reading the resulting CtxWrap, and
-// finally the record it owns.
+// looking up the ALS instance as the key, and reading the record pointer out
+// of the resulting object's internal field. That field points straight at the
+// record, so the reader never needs to know CtxWrap exists.
 
 #include <node.h>
 #include <v8-internal.h>
@@ -14,9 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <atomic>
-#include <memory>
-#include <type_traits>
+#include <new>
 #include <vector>
 
 extern "C" {
@@ -37,9 +38,9 @@ using v8::Object;
 //  - the (per-isolate) tagged address of the `undefined` singleton
 //    (`undefined_addr`). After looking up the value for our ALS key in the
 //    ACF map, the reader can compare against this to skip the JSObject /
-//    internal-field-0 dereference when no CtxWrap is currently attached;
+//    internal-field-0 dereference when no ThreadContext is currently attached;
 //    without it, a reader walking through undefined would have to rely on
-//    structural validation of the bytes at undefined+wrapped_object_offset
+//    structural validation of the bytes at undefined+js_object_record_offset
 //    to detect the absence.
 //
 // Layout is part of the reader ABI: see the README "Discovery contract"
@@ -114,17 +115,12 @@ static_assert(offsetof(OtelThreadCtxRecord, attrs_data_size) == 26,
 static_assert(offsetof(OtelThreadCtxRecord, attrs_data) == 28,
               "attrs_data offset");
 
-struct OtelThreadCtxRecordDeleter {
-  void operator()(OtelThreadCtxRecord* p) const noexcept { free(p); }
-};
-using OwnedRecord =
-    std::unique_ptr<OtelThreadCtxRecord, OtelThreadCtxRecordDeleter>;
-
-// Floor on the attrs_data capacity of a freshly allocated record. Sized so
-// the total allocation is one 64-byte cache line — matching the OTEP-4947
-// "frugal writer" guidance ("a frugal writer may aim to keep the entire
-// record under 64 bytes") — and giving small records some slack so the
-// first few appends (if any) can be in-place.
+// Floor on the attrs_data capacity of a freshly allocated record. Matching the
+// OTEP-4947 "frugal writer" guidance ("a frugal writer may aim to keep the
+// entire record under 64 bytes") — and giving small records some slack so the
+// first few appends (if any) can be in-place. The CtxWrap fields preceding
+// the record in the same block are writer bookkeeping the reader never sees,
+// so they don't count against that budget.
 constexpr size_t MIN_INITIAL_CAPACITY = 64 - sizeof(OtelThreadCtxRecord);
 
 // Upper bound on the attribute payload. Sized so the total record (28-byte
@@ -156,22 +152,32 @@ static inline void SetAlignedPointerInInternalField(Local<Object> object,
 #endif
 }
 
-// Wraps a heap-allocated OtelThreadCtxRecord. Lifetime is managed by V8 GC:
-// when no JS code (or AsyncLocalStorage entry) holds a reference, the record
-// is freed.
+// Wraps an OTEP-4947 record. The record isn't a separate allocation: a
+// CtxWrap is one contiguous block whose head is the CtxWrap object itself and
+// whose tail — starting at `RECORD_OFFSET`, immediately past the object's own
+// fields — holds the record header followed by `capacity_` bytes of
+// attrs_data. Lifetime is managed by V8 GC: when no JS code (or
+// AsyncLocalStorage entry) holds a reference, the whole block is freed.
 //
-// Layout note for the reader: `record_` is private to C++ but its byte
-// position within CtxWrap is part of the reader contract. It is the first
-// field of the class, at offset given by `threadlocal.native_wrap_fields_offset`. 
+// Layout note for the reader: the holder JSObject's internal field 0 points at
+// the record itself, not at the CtxWrap, so a reader that has walked to the
+// holder is a single dereference away from the record and never has to know
+// that CtxWrap exists at all. C++ code goes the other way with FromRecord(),
+// which just subtracts RECORD_OFFSET.
 //
-// Deliberately not a node::ObjectWrap as it has a known bug in interaction
-// with GC when numerous instances are created and can abort the process during
-// isolate teardown, see https://github.com/nodejs/node/pull/63642 and 
-// https://github.com/nodejs/node/pull/63985. Instances live at shutdown are
-// deleted using DrainLiveCtxWraps.
+// Deliberately not a node::ObjectWrap, for two independent reasons. First, it
+// has a known bug in interaction with GC when numerous instances are created
+// and can abort the process during isolate teardown, see
+// https://github.com/nodejs/node/pull/63642 and
+// https://github.com/nodejs/node/pull/63985; instances live at shutdown are
+// deleted using DrainLive instead. Second, node::ObjectWrap owns internal
+// field 0 — its Wrap() stores the ObjectWrap pointer there and its Unwrap()
+// reads it back — so deriving from it would force that slot to hold a CtxWrap
+// pointer, and every reader would be stuck with the extra hop through the
+// wrapper that the layout above exists to avoid. Not deriving from it is what
+// frees the slot for the record pointer.
 class CtxWrap {
  public:
-  ~CtxWrap();
   static void Init(Local<Object> exports);
 
   CtxWrap(const CtxWrap&) = delete;
@@ -199,28 +205,48 @@ class CtxWrap {
                           std::vector<uint8_t>* out,
                           bool* out_truncated);
 
-  CtxWrap(OtelThreadCtxRecord* record, size_t capacity, bool truncated);
+  // Splice `appended` onto the end of the record: in place if it fits in the
+  // current allocation's slack, otherwise by moving the whole wrap to a larger
+  // one and repointing `holder`'s internal field at the new record. In that
+  // case `this` is destroyed before returning, so the caller must not touch it
+  // afterwards. Returns false if the allocation fails.
+  bool AppendEncoded(Local<Object> holder,
+                     const std::vector<uint8_t>& appended);
 
-  // Attach to the holder JSObject: store `this` in internal field 0 and take
-  // a weak handle on the holder, so V8 deletes us once it collects it.
+  explicit CtxWrap(size_t capacity);
+  ~CtxWrap();
+
+  // Allocate one zero-initialised block big enough for the object plus a
+  // record with `capacity` bytes of attrs_data, and construct the CtxWrap at
+  // its head. Returns nullptr if the allocation fails. CtxWraps are never
+  // created with plain `new` — the trailing record wouldn't be there.
+  static CtxWrap* Create(size_t capacity);
+  // Destroy and free a CtxWrap obtained from Create(). Runs the destructor and
+  // then `free`, which is what the `calloc` in Create() pairs with; `delete`
+  // would reach for `operator delete` instead, and the mismatch is undefined
+  // behaviour that a replaced global allocator or ASan will actually trip
+  // over. Deleting `operator delete` below makes reaching for it a compile
+  // error.
+  static void Destroy(CtxWrap* self);
+  static void operator delete(void*) = delete;
+
+  // The record living in the tail of this object's own allocation.
+  OtelThreadCtxRecord* record();
+  // The CtxWrap that precedes the `record`. Inverse of record().
+  static CtxWrap* FromRecord(void* record);
+
+  // Attach to the holder JSObject: store our record pointer in internal field
+  // 0 (the reader's entry point) and take a weak handle on the holder, so V8
+  // destroys us once it collects it.
   void Wrap(Local<Object> holder);
   static CtxWrap* Unwrap(Local<Object> holder);
   static void WeakCallback(const v8::WeakCallbackInfo<CtxWrap>& data);
+  static void DrainLive(void* arg);
 
-  // The fields are kept in one access section because C++ leaves
-  // the relative layout of fields in different access controls
-  // implementation-defined. `record_` must come first — its offset
-  // within CtxWrap is part of the reader contract (see the
-  // static_assert below) — and is therefore `public`. The bookkeeping
-  // fields after it would normally be private, but the access change
-  // would let a conforming compiler reorder them in front of `record_`;
-  // exposing them publicly keeps everything in one ordering-stable
-  // block. Readers never touch them.
- public:
-  OtelThreadCtxRecord* record_;
-  // attrs_data capacity in bytes of the record_ allocation. The total
-  // allocation is `sizeof(OtelThreadCtxRecord) + capacity_`. Always
-  // `record_->attrs_data_size <= capacity_ <= MAX_ATTRS_DATA_SIZE`.
+  // attrs_data capacity in bytes of the record in this object's tail. The
+  // total allocation is `RECORD_OFFSET + sizeof(OtelThreadCtxRecord) +
+  // capacity_`. Always `record()->attrs_data_size <= capacity_ <=
+  // MAX_ATTRS_DATA_SIZE`.
   size_t capacity_;
   // Set to true (once, never cleared) if at any point in this record's
   // lifetime — during New() or any subsequent AppendAttributes() — at least one
@@ -231,8 +257,8 @@ class CtxWrap {
   // on each attribute value, which can execute user JS (e.g. a custom
   // `toString`) that in turn calls `appendAttributes` on the same
   // ThreadContext. A reentrant call would mutate attrs_data_size out
-  // from under the outer call's `current_used` snapshot, causing the
-  // outer memcpy to overwrite the reentrant call's bytes and the outer
+  // from under the outer call's snapshot of it, causing the outer memcpy
+  // to overwrite the reentrant call's bytes and the outer
   // attrs_data_size write to shrink the record. We reject the reentrant
   // call instead.
   bool encoding_;
@@ -247,14 +273,46 @@ class CtxWrap {
   v8::Global<v8::Object> handle_;
 };
 
+// Byte offset of the record within a CtxWrap allocation: the record starts
+// immediately after the object's own fields. Both record() and FromRecord()
+// are defined in terms of it.
+constexpr size_t RECORD_OFFSET = sizeof(CtxWrap);
+static_assert(RECORD_OFFSET % alignof(OtelThreadCtxRecord) == 0,
+              "record must land on its natural alignment");
+// Most likely subsumed in the previous assert, but still call out directly
+// that record must be 2-aligned as that's a requirement for storing it
+// with v8::Object::SetAlignedPointerInInternalField().
+static_assert(RECORD_OFFSET % 2 == 0, "record must land on 2 boundary");
+
+inline OtelThreadCtxRecord* CtxWrap::record() {
+  return reinterpret_cast<OtelThreadCtxRecord*>(
+      reinterpret_cast<uint8_t*>(this) + RECORD_OFFSET);
+}
+
+inline CtxWrap* CtxWrap::FromRecord(void* record) {
+  return reinterpret_cast<CtxWrap*>(static_cast<uint8_t*>(record) -
+                                    RECORD_OFFSET);
+}
+
+CtxWrap* CtxWrap::Create(size_t capacity) {
+  void* mem = calloc(1, RECORD_OFFSET + sizeof(OtelThreadCtxRecord) + capacity);
+  if (mem == nullptr) return nullptr;
+  return new (mem) CtxWrap(capacity);
+}
+
+void CtxWrap::Destroy(CtxWrap* self) {
+  self->~CtxWrap();
+  free(self);
+}
+
 // Head of the live-CtxWrap list for this thread. Node pins each isolate to a
 // thread, and CtxWraps are only ever constructed and destroyed on their own
 // isolate's thread, so a thread-local needs no lock.
 thread_local CtxWrap* g_live_ctx_wraps = nullptr;
 
-// Delete every CtxWrap V8 has not collected yet. Registered once per isolate
+// Destroy every CtxWrap V8 has not collected yet. Registered once per isolate
 // from Init() as an environment shutdown hook.
-void DrainLiveCtxWraps(void* arg) {
+void CtxWrap::DrainLive(void* arg) {
   auto* isolate = static_cast<Isolate*>(arg);
   v8::HandleScope scope(isolate);
   CtxWrap* p = g_live_ctx_wraps;
@@ -262,13 +320,14 @@ void DrainLiveCtxWraps(void* arg) {
     CtxWrap* next = p->next_;
     p->pprev_ = nullptr;
     p->next_ = nullptr;
-    // Clear the holder's internal field before freeing what it points at 
-    // (which is *p), so the out-of-process reader can't read a dangling
-    // pointer after "delete p".
+    // Clear the holder's internal field before freeing what it points at
+    // (which is p's record), so the out-of-process reader can't read a
+    // dangling pointer after the block is gone.
     if (!p->handle_.IsEmpty()) {
       SetAlignedPointerInInternalField(p->handle_.Get(isolate), 0, nullptr);
     }
-    delete p;
+    std::atomic_signal_fence(std::memory_order_acq_rel);
+    Destroy(p);
     p = next;
   }
   g_live_ctx_wraps = nullptr;
@@ -282,16 +341,15 @@ CtxWrap::~CtxWrap() {
     *pprev_ = next_;
     if (next_ != nullptr) next_->pprev_ = pprev_;
   }
-  free(record_);
 }
 
 void CtxWrap::WeakCallback(const v8::WeakCallbackInfo<CtxWrap>& data) {
-  delete data.GetParameter();
+  Destroy(data.GetParameter());
 }
 
 void CtxWrap::Wrap(Local<Object> holder) {
   Isolate* isolate = Isolate::GetCurrent();
-  SetAlignedPointerInInternalField(holder, 0, this);
+  SetAlignedPointerInInternalField(holder, 0, record());
   handle_.Reset(isolate, holder);
   handle_.SetWeak(this, &WeakCallback, v8::WeakCallbackType::kParameter);
   next_ = g_live_ctx_wraps;
@@ -302,13 +360,14 @@ void CtxWrap::Wrap(Local<Object> holder) {
 
 CtxWrap* CtxWrap::Unwrap(Local<Object> holder) {
   if (holder->InternalFieldCount() < 1) return nullptr;
-  return static_cast<CtxWrap*>(GetAlignedPointerFromInternalField(*holder, 0));
+  void* record = GetAlignedPointerFromInternalField(*holder, 0);
+  if (record == nullptr) return nullptr;
+  return FromRecord(record);
 }
 
-CtxWrap::CtxWrap(OtelThreadCtxRecord* record, size_t capacity, bool truncated)
-    : record_(record),
-      capacity_(capacity),
-      truncated_(truncated),
+CtxWrap::CtxWrap(size_t capacity)
+    : capacity_(capacity),
+      truncated_(false),
       encoding_(false),
       pprev_(nullptr),
       next_(nullptr) {}
@@ -462,12 +521,13 @@ void CtxWrap::New(const FunctionCallbackInfo<Value>& args) {
   // doesn't change the geometric-growth amortized cost of subsequent
   // appends).
   size_t capacity = std::max(attrs_buf.size(), MIN_INITIAL_CAPACITY);
-  const size_t total = sizeof(OtelThreadCtxRecord) + capacity;
-  OwnedRecord record(static_cast<OtelThreadCtxRecord*>(calloc(1, total)));
-  if (!record) {
+  CtxWrap* self = CtxWrap::Create(capacity);
+  if (self == nullptr) {
     isolate->ThrowError("allocation failed");
     return;
   }
+  self->truncated_ = truncated;
+  OtelThreadCtxRecord* record = self->record();
   memcpy(record->trace_id, trace_id, sizeof(trace_id));
   memcpy(record->span_id, span_id, sizeof(span_id));
   record->attrs_data_size = static_cast<uint16_t>(attrs_buf.size());
@@ -483,15 +543,14 @@ void CtxWrap::New(const FunctionCallbackInfo<Value>& args) {
   std::atomic_signal_fence(std::memory_order_release);
   *reinterpret_cast<volatile uint8_t*>(&record->valid) = 1;
 
-  CtxWrap* self = new CtxWrap(record.release(), capacity, truncated);
+  // Only now does the record become reachable — Wrap() is what publishes its
+  // address into the holder's internal field.
   self->Wrap(args.This());
   args.GetReturnValue().Set(args.This());
 }
 
-// Append entries to the active record. Either modifies the record in place
-// (if the appended bytes fit in the current allocation's slack) or
-// reallocates to a larger one (geometrically), keeping invariant
-// `record_->attrs_data_size <= capacity_`.
+// `appendAttributes(attributes)`: validate and encode the attributes, then
+// hand the encoded bytes to AppendEncoded to splice onto the active record.
 void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
   Isolate* isolate = args.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
@@ -506,29 +565,31 @@ void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
     return;
   }
 
-  // Reject reentrant AppendAttributes on the same wrap. EncodeAttrs'
-  // `ToString` below can execute user JS, and if that JS calls
-  // `appendAttributes` on this same ThreadContext, the reentrant call
-  // would grow attrs_data_size out from under the outer call's
-  // `current_used` snapshot, causing the outer memcpy to overwrite the
-  // reentrant call's bytes and the outer attrs_data_size write to shrink
-  // the record.
+  // Reject reentrant AppendAttributes on the same wrap. EncodeAttrs' element
+  // getters and `ToString` below can execute user JS, and if that JS calls
+  // `appendAttributes` on this same ThreadContext, the reentrant call would
+  // grow attrs_data_size out from under the outer call's snapshot of it,
+  // causing the outer memcpy to overwrite the reentrant call's bytes and
+  // the outer attrs_data_size write to shrink the record.
   if (self->encoding_) {
     isolate->ThrowError(
         "reentrant appendAttributes on the same ThreadContext is not allowed");
     return;
   }
-  self->encoding_ = true;
-  struct EncodingGuard {
-    CtxWrap* w;
-    ~EncodingGuard() { w->encoding_ = false; }
-  } guard{self};
 
-  const size_t current_used = self->record_->attrs_data_size;
   std::vector<uint8_t> appended;
   bool truncated = false;
-  if (!EncodeAttrs(
-          isolate, context, args[0], current_used, &appended, &truncated)) {
+  self->encoding_ = true;
+  const bool encoded = EncodeAttrs(isolate,
+                                   context,
+                                   args[0],
+                                   self->record()->attrs_data_size,
+                                   &appended,
+                                   &truncated);
+  // EncodeAttrs was the only thing that can run user JS, so the
+  // reentrancy guard had to span only it.
+  self->encoding_ = false;
+  if (!encoded) {
     return;
   }
   if (truncated) self->truncated_ = true;
@@ -538,10 +599,23 @@ void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
   // already at the cap.
   if (appended.empty()) return;
 
+  if (!self->AppendEncoded(args.This(), appended)) {
+    isolate->ThrowError("allocation failed");
+  }
+}
+
+// Splice `appended` onto the end of the record: in place if the bytes fit in
+// the current allocation's slack, otherwise by moving the whole wrap to a
+// larger allocation (grown geometrically), keeping invariant
+// `record()->attrs_data_size <= capacity_`. See the declaration for the
+// `this`-is-destroyed caveat on the growing path.
+bool CtxWrap::AppendEncoded(Local<Object> holder,
+                            const std::vector<uint8_t>& appended) {
+  const size_t current_used = record()->attrs_data_size;
   const size_t new_used = current_used + appended.size();
   // EncodeAttrs already enforced the cap; new_used <= MAX_ATTRS_DATA_SIZE.
 
-  if (new_used <= self->capacity_) {
+  if (new_used <= capacity_) {
     // In-place: write the new entries past the current attrs_data_size,
     // then bump attrs_data_size with a release fence + volatile store so
     // the content writes are visible before the size store from the
@@ -553,46 +627,51 @@ void CtxWrap::AppendAttributes(const FunctionCallbackInfo<Value>& args) {
     // mid-append sees either the old size (old extent, ignores the
     // half-written tail) or the new size (full new extent, all bytes
     // written). Either is consistent.
-    memcpy(&self->record_->attrs_data[current_used],
+    memcpy(&record()->attrs_data[current_used],
            appended.data(),
            appended.size());
     std::atomic_signal_fence(std::memory_order_release);
-    *reinterpret_cast<volatile uint16_t*>(&self->record_->attrs_data_size) =
+    *reinterpret_cast<volatile uint16_t*>(&record()->attrs_data_size) =
         static_cast<uint16_t>(new_used);
-    return;
+    return true;
   }
 
-  // Doesn't fit. Reallocate with geometric growth with cap.
+  // Doesn't fit. Reallocate with geometric growth with cap. The record lives
+  // inside the CtxWrap allocation, so growing it means moving the CtxWrap too:
+  // build a replacement, hand it the same holder object, and retire the old
+  // one.
   size_t new_cap =
-      std::min(std::max(self->capacity_ * 2, new_used), MAX_ATTRS_DATA_SIZE);
+      std::min(std::max(capacity_ * 2, new_used), MAX_ATTRS_DATA_SIZE);
 
-  const size_t total = sizeof(OtelThreadCtxRecord) + new_cap;
-  OwnedRecord new_rec(static_cast<OtelThreadCtxRecord*>(calloc(1, total)));
-  if (!new_rec) {
-    isolate->ThrowError("allocation failed");
-    return;
-  }
+  CtxWrap* new_self = CtxWrap::Create(new_cap);
+  if (new_self == nullptr) return false;
+  new_self->truncated_ = truncated_;
   // Copy the existing record (header + already-written attrs_data).
-  memcpy(
-      new_rec.get(), self->record_, sizeof(OtelThreadCtxRecord) + current_used);
+  memcpy(new_self->record(),
+         record(),
+         sizeof(OtelThreadCtxRecord) + current_used);
   // Append the new entries and update attrs_data_size.
-  memcpy(&new_rec->attrs_data[current_used], appended.data(), appended.size());
-  new_rec->attrs_data_size = static_cast<uint16_t>(new_used);
+  memcpy(&new_self->record()->attrs_data[current_used],
+         appended.data(),
+         appended.size());
+  new_self->record()->attrs_data_size = static_cast<uint16_t>(new_used);
 
-  // Publish: the pointer swap is the atomic boundary the reader sees. The
-  // first fence keeps the new_rec content writes ordered before the pointer
-  // store from the compiler's perspective. The second fence prevents free()
-  // from being hoisted above the pointer swap — without it, a reader stopped
-  // between a reordered free() and the not-yet-completed swap would follow
-  // self->record_ into freed memory. OTEP signal-handler semantics (the
-  // writer is stopped during reads) take care of CPU-side ordering and make
-  // immediate freeing of the old record safe.
+  // Publish: the internal-field store inside Wrap() is the atomic boundary the
+  // reader sees. The first fence keeps the new_self content writes ordered
+  // before that store from the compiler's perspective. The second fence
+  // prevents the free() inside Destroy() from being hoisted above it — without
+  // it, a reader stopped between a reordered free() and the not-yet-completed
+  // store would follow the internal field into freed memory. OTEP
+  // signal-handler semantics (the writer is stopped during reads) take care of
+  // CPU-side ordering and make immediate freeing of the old block safe.
   std::atomic_signal_fence(std::memory_order_release);
-  OtelThreadCtxRecord* old_rec = self->record_;
-  self->record_ = new_rec.release();
-  self->capacity_ = new_cap;
+  new_self->Wrap(holder);
   std::atomic_signal_fence(std::memory_order_acq_rel);
-  free(old_rec);
+  // Destroying the old wrap runs ~Global on its handle_, which resets the weak
+  // handle and so cancels the WeakCallback V8 would otherwise fire on the
+  // freed block.
+  CtxWrap::Destroy(this);
+  return true;
 }
 
 // Mark this record's `valid` byte as 0 in place. Every async-context
@@ -611,7 +690,7 @@ void CtxWrap::Invalidate(const FunctionCallbackInfo<Value>& args) {
     return;
   }
   std::atomic_signal_fence(std::memory_order_release);
-  *reinterpret_cast<volatile uint8_t*>(&self->record_->valid) = 0;
+  *reinterpret_cast<volatile uint8_t*>(&self->record()->valid) = 0;
 }
 
 // Returns true if any attribute was ever dropped from this wrapper's
@@ -638,16 +717,16 @@ void CtxWrap::DebugBytes(const FunctionCallbackInfo<Value>& args) {
     return;
   }
   const size_t total =
-      sizeof(OtelThreadCtxRecord) + self->record_->attrs_data_size;
+      sizeof(OtelThreadCtxRecord) + self->record()->attrs_data_size;
   Local<v8::ArrayBuffer> buf = v8::ArrayBuffer::New(isolate, total);
-  memcpy(buf->GetBackingStore()->Data(), self->record_, total);
+  memcpy(buf->GetBackingStore()->Data(), self->record(), total);
   args.GetReturnValue().Set(Uint8Array::New(buf, 0, total));
 }
 
 void CtxWrap::Init(Local<Object> exports) {
   Isolate* isolate = Isolate::GetCurrent();
   Local<Context> context = isolate->GetCurrentContext();
-  node::AddEnvironmentCleanupHook(isolate, DrainLiveCtxWraps, isolate);
+  node::AddEnvironmentCleanupHook(isolate, DrainLive, isolate);
 
   Local<FunctionTemplate> tpl = FunctionTemplate::New(isolate, New);
   tpl->SetClassName(String::NewFromUtf8Literal(isolate, "ThreadContext"));
@@ -742,22 +821,22 @@ void GetStoredAlsHash(const FunctionCallbackInfo<Value>& args) {
 
 // V8 layout constants captured at addon-compile time from the same V8
 // headers Node bundles. Published via the discovery contract so an
-// out-of-process reader can decode our wrapper / V8's internal hashmap
-// layout without doing its own V8-internal-symbol lookups for the
+// out-of-process reader can decode V8's JSObject / internal hashmap layout
+// without doing its own V8-internal-symbol lookups for the
 // pointer-compression / sandbox state.
 //
-// `wrapped_object_offset` is the byte offset within a JSObject where
-// internal field 0 lives — the slot we set via SetAlignedPointerInInternalField
-// and the reader extracts to get the C++ CtxWrap pointer. It depends on
-// V8's pointer-compression and sandbox build flags (kJSObjectHeaderSize
-// = 3 * kApiTaggedSize, plus the embedder-data-slot external-pointer
-// offset of either 0 or kApiTaggedSize depending on V8_ENABLE_SANDBOX).
+// `js_object_record_offset` is the byte offset, within the JSObject holding a
+// ThreadContext, of the slot holding the pointer to its record — internal
+// field 0, which we set via SetAlignedPointerInInternalField and the reader
+// dereferences. Note it locates the *pointer*, not the record: the reader adds
+// it to the JSObject address and then loads. It depends on V8's
+// pointer-compression and sandbox build flags.
 //
 // `tagged_size` is V8's tagged pointer width (4 with pointer compression,
 // 8 without). Together these are sufficient to derive every other V8
 // layout offset our discovery contract relies on.
 #if NODE_MAJOR_VERSION >= 22
-constexpr int WRAPPED_OBJECT_OFFSET =
+constexpr int JS_OBJECT_RECORD_OFFSET =
     v8::internal::Internals::kJSObjectHeaderSize +
     v8::internal::Internals::kEmbedderDataSlotExternalPointerOffset;
 #else
@@ -766,22 +845,9 @@ constexpr int WRAPPED_OBJECT_OFFSET =
 // either — see storeAls), so this value is published only to keep the
 // addon's exported surface consistent across Node majors. A would-be
 // reader cannot reach a live record through it.
-constexpr int WRAPPED_OBJECT_OFFSET = 0;
+constexpr int JS_OBJECT_RECORD_OFFSET = 0;
 #endif
 constexpr int TAGGED_SIZE = v8::internal::kApiTaggedSize;
-
-// Given a pointer to a CtxWrap — reached from the JSObject's V8
-// wrapped-object slot — add this offset to arrive at `record_`. CtxWrap has
-// no base class, so `record_` is its first member and the offset is zero;
-// computing it with offsetof keeps the published value correct if the layout
-// ever changes.
-constexpr int NATIVE_WRAP_FIELDS_OFFSET =
-    static_cast<int>(offsetof(CtxWrap, record_));
-static_assert(std::is_standard_layout<CtxWrap>::value,
-              "CtxWrap must stay standard-layout: the reader contract depends "
-              "on offsetof(record_) being well-defined");
-static_assert(offsetof(CtxWrap, record_) == 0,
-              "record_ must be the first field of CtxWrap");
 
 // V8 JSMap layout: kTableOffset within the JSMap object holds a tagged
 // pointer to the backing OrderedHashMap table. Not exposed in V8's
@@ -811,10 +877,9 @@ NODE_MODULE_INIT() {
         .FromJust();
   };
   publish_int("jsMapTableOffset", JS_MAP_TABLE_OFFSET);
-  publish_int("nativeWrapFieldsOffset", NATIVE_WRAP_FIELDS_OFFSET);
   publish_int("orderedHashMapHeaderSize", ORDERED_HASH_MAP_HEADER_SIZE);
   publish_int("taggedSize", TAGGED_SIZE);
-  publish_int("wrappedObjectOffset", WRAPPED_OBJECT_OFFSET);
+  publish_int("jsObjectRecordOffset", JS_OBJECT_RECORD_OFFSET);
 }
 
 #pragma GCC diagnostic pop
