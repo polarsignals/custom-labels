@@ -745,7 +745,7 @@ void CtxWrap::SetTraceFlags(const FunctionCallbackInfo<Value>& args) {
   uint8_t trace_flags = 0;
   if (!ToTraceFlags(isolate, args[0], &trace_flags)) return;
   std::atomic_signal_fence(std::memory_order_release);
-  *reinterpret_cast<volatile uint8_t*>(&self->record_->trace_flags) =
+  *reinterpret_cast<volatile uint8_t*>(&self->record()->trace_flags) =
       trace_flags;
 }
 
