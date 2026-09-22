@@ -11,41 +11,6 @@
 export interface ProcessContextAttributes {
     readonly 'threadlocal.schema_version': 'nodejs_v1_dev';
     readonly 'threadlocal.attribute_key_map': readonly string[];
-
-    /**
-     * Byte offset, within the V8 JSObject holding a `ThreadContext`, of the
-     * slot holding the pointer to its record — internal field 0, which the
-     * addon sets via `SetAlignedPointerInInternalField`. It locates the
-     * pointer, not the record: add it to the JSObject address, then load.
-     * Captured from the V8 headers at addon-compile time so the reader
-     * doesn't have to derive it from V8's pointer-compression / sandbox
-     * build flags.
-     */
-    readonly 'threadlocal.js_object_record_offset': number;
-
-    /**
-     * V8's tagged-pointer width in bytes (4 with pointer compression, 8
-     * without). The reader can use this to derive the JSMap-, FixedArray-,
-     * and OrderedHashMap-header offsets it walks without hardcoding them.
-     */
-    readonly 'threadlocal.tagged_size': number;
-
-    /**
-     * Offset within a V8 `JSMap` object of the tagged pointer to its
-     * backing `OrderedHashMap` table (`JSCollection::kTableOffset` in V8).
-     * Not exposed in V8's public headers; the addon carries a build-time
-     * constant kept in sync with Node's private V8 tree.
-     */
-    readonly 'threadlocal.js_map_table_offset': number;
-
-    /**
-     * Size of the header preceding the `element_count` /
-     * `deleted_element_count` / `number_of_buckets` fields inside a V8
-     * `OrderedHashMap`. Not exposed in V8's public headers; the addon
-     * carries a build-time constant kept in sync with Node's private V8
-     * tree.
-     */
-    readonly 'threadlocal.ordered_hash_map_header_size': number;
 }
 
 /**
