@@ -25,7 +25,12 @@ if (major >= 22) {
 
 const res = spawnSync(
     process.execPath,
-    [...flags, '--test', path.join(__dirname, 'test.js')],
+    [
+        ...flags,
+        '--test',
+        path.join(__dirname, 'test.js'),
+        path.join(__dirname, 'async-context-frame.js'),
+    ],
     { stdio: 'inherit' },
 );
 

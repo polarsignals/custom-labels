@@ -17,6 +17,7 @@ let ORDERED_HASH_MAP_HEADER_SIZE = 0x10;
 let ThreadContext;
 let getContext;
 let clearContext;
+let isAsyncContextFrameActive;
 
 if (process.platform === 'linux') {
     const bindings = require('bindings');
@@ -31,24 +32,59 @@ if (process.platform === 'linux') {
     const { AsyncLocalStorage } = require('node:async_hooks');
     let als;
 
-    function asyncContextFrameError() {
-        const [major] = process.versions.node.split('.').map(Number);
-        // Explicit opt-out: it's not in use.
-        if (process.execArgv.includes('--no-async-context-frame')) return 'Node explicitly launched with --no-async-context-frame';
-        // Since Node 24, AsyncContextFrame is the default unless disabled.
-        if (major >= 24) return undefined;
-        // In Node 22/23, it existed behind an experimental flag.
-        if (process.execArgv.includes('--experimental-async-context-frame')) return undefined;
-        if (major >= 22) return 'Node versions prior to v24 must be launched with --experimental-async-context-frame';
-        // Older versions: not available.
-        return 'Node major versions prior to v22 do not support the feature at all';
+    let acfActive;
+
+    // Whether this process's AsyncLocalStorage is backed by AsyncContextFrame,
+    // which is what puts the active value in the isolate's
+    // ContinuationPreservedEmbedderData slot that an out-of-process reader
+    // walks.
+    //
+    // Feature-detected rather than inferred from the Node version plus
+    // `process.execArgv`, because the two can disagree (and `execArgv` is not
+    // reliable anyway; it can be rewritten by tooling or not passed on to a
+    // worker thread).
+    //
+    // Detected by asking the addon what is in the CPED slot during a `run()`.
+    // With ACF, Node installs an AsyncContextFrame — a JS Map keyed by the
+    // AsyncLocalStorage instance, valued by its store — as the running
+    // continuation's CPED; without it, nothing writes the slot. So a probe
+    // storage whose own store is visible there is direct evidence.
+    //
+    // Memoized: the answer is fixed for the life of the thread.
+    isAsyncContextFrameActive = function () {
+        if (acfActive === undefined) {
+            const probe = new AsyncLocalStorage();
+            // Object so we strict-equal compare based on identity
+            const sentinel = {};
+            let bound = false;
+            probe.run(sentinel, () => {
+                bound = addon.cpedMapContains(probe, sentinel);
+            });
+            probe.disable();
+            acfActive = bound;
+        }
+        return acfActive;
+    };
+
+    // How to turn AsyncContextFrame on, for the error message below. Advisory
+    // text only — never decide availability from this; that is what
+    // isAsyncContextFrameActive is for.
+    function asyncContextFrameHint() {
+        const version = process.versions.node;
+        const [major, minor] = version.split('.').map(Number);
+        if (major < 22 || (major === 22 && minor < 7)) {
+            return `Node ${version} does not support it at all; Node 24 and later enable it by default`;
+        }
+        if (major < 24) {
+            return `Node ${version} needs --experimental-async-context-frame, on the command line or in NODE_OPTIONS; Node 24 and later enable it by default`;
+        }
+        return `Node ${version} enables it by default, so something turned it off — look for --no-async-context-frame on the command line, in NODE_OPTIONS, or in this worker's execArgv`;
     }
 
     function ensureHook() {
         if (als) return;
-        const err = asyncContextFrameError();
-        if (err) {
-            throw new Error(`otel thread-ctx writer requires async_context_frame support, which is unavailable: ${err}.`);
+        if (!isAsyncContextFrameActive()) {
+            throw new Error(`otel thread-ctx writer requires async_context_frame support, which is unavailable: ${asyncContextFrameHint()}.`);
         }
         als = new AsyncLocalStorage();
         addon.storeAls(als);
@@ -102,6 +138,8 @@ if (process.platform === 'linux') {
     }
     ThreadContext = NoopThreadContext;
     getContext = function () { return undefined; };
+    // No addon to probe with, and nothing to publish to a reader anyway.
+    isAsyncContextFrameActive = function () { return false; };
     clearContext = function () {};
     exports._currentRecordBytes = function () { return undefined; };
 }
@@ -150,3 +188,6 @@ exports.ThreadContext = ThreadContext;
 exports.getContext = getContext;
 exports.clearContext = clearContext;
 exports.getProcessContextAttributes = getProcessContextAttributes;
+// Not part of the stable API; for tests and for callers that would rather
+// check up front than catch the error enter() / run() throw without ACF.
+exports._isAsyncContextFrameActive = isAsyncContextFrameActive;
