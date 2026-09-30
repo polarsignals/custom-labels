@@ -206,25 +206,20 @@ duplicates.
 {
     'threadlocal.schema_version': 'nodejs_v1_dev',
     'threadlocal.attribute_key_map': ['http.method', 'http.route', ...],
-    // V8 layout constants captured from the V8 headers the addon was
-    // compiled against. These let the reader walk V8's JSObject and
-    // OrderedHashMap layout without having to derive these itself from
-    // various build flags.
-    // NOTE: the values here are documentation examples and a reader should
-    // always read the actual values and not assume the examples here.
-    'threadlocal.js_map_table_offset': 24,
-    'threadlocal.js_object_record_offset': 24,
-    'threadlocal.ordered_hash_map_header_size': 16,
-    'threadlocal.tagged_size': 8,
 }
 ```
 
 Spread it (or copy its entries) into whatever attribute map the application
 hands to its OTEP-4719 process-context publisher. The `attribute_key_map`
 keeps the writer-side index-to-name mapping in sync with what an external
-reader will use to decode the on-the-wire `key_index` bytes; the
-layout-constant entries are what the reader needs to walk from the V8
-async-context frame to the underlying record.
+reader will use to decode the on-the-wire `key_index` bytes.
+
+The V8 object layout a reader walks from the async-context frame to the
+record is not published; the `nodejs_v1` schema version fixes it, and with
+it presumes the V8 Node.js builds by default (64-bit, pointer compression
+off, sandbox off). The addon derives the same values from the V8 headers it
+is compiled against and `static_assert`s them, so a build not matching the
+schema will fail to compile.
 
 ## Discovery contract (for reader implementers)
 
@@ -309,6 +304,11 @@ high 32 bits hold the integer payload (arithmetic-shift right by 32 to
 extract).
 
 ```cpp
+// V8 object layout: the `table` field of a JSMap sits immediately after the
+// JSObject header, and internal field 0 of the wrapper JSObject sits there
+// too.
+constexpr size_t js_map_table_offset = 24, js_object_record_offset = 24;
+
 auto* ctx = read_tls<otel_thread_ctx_nodejs_v1_t>();
 // Zero cped_slot means nothing is published on this thread (never was, or
 // torn down again), so no other field may be used.
@@ -318,8 +318,7 @@ if (*ctx->cped_slot == ctx->undefined_addr) return NO_CONTEXT;
 // CPED -> current AsyncContextFrame (a JS Map).
 auto* acf = untag<JSMap>(*ctx->cped_slot);
 
-// JS Map -> backing OrderedHashMap. The `table` field sits at offset
-// `js_map_table_offset` inside the JSMap header.
+// JS Map -> backing OrderedHashMap.
 auto* table = untag<OrderedHashMap>(
     *(tagged_ptr*)((char*)acf + js_map_table_offset));
 
@@ -340,9 +339,8 @@ if (!e) return NO_CONTEXT;           // ALS not present in this ACF
 if (e->value == ctx->undefined_addr) return NO_CONTEXT;  // explicit undefined
 
 // Entry value is the JS wrapper for our ThreadContext. Internal field 0
-// lives at `js_object_record_offset` inside the JSObject and holds the
-// raw native pointer to the record directly (low bits zero because the
-// pointer is aligned and Node's V8 has no sandbox).
+// holds the raw native pointer to the record directly (low bits zero
+// because the pointer is aligned and Node's V8 has no sandbox).
 auto* wrap_js = untag<JSObject>(e->value);
 auto* record =
     *(OtelThreadCtxRecord**)((char*)wrap_js + js_object_record_offset);
