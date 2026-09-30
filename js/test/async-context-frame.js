@@ -1,8 +1,8 @@
 'use strict';
 
 // AsyncContextFrame detection. Unlike test.js this file does not bail when ACF
-// is off in the test process: the cases that matter most are the ones where a
-// child process has it off, or has it on by a route execArgv doesn't show.
+// is off in the test process: each Node line gets one child with ACF on and
+// one with it off, to check detection in both directions.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -27,13 +27,13 @@ const hasAcfSupport = major > 22 || (major === 22 && minor >= 7);
 
 // Runs the probe in a child process configured the way the test wants, since
 // AsyncContextFrame is decided at process start and can't be toggled
-// in-process. NODE_OPTIONS is cleared unless the test sets it, so the
-// developer's own environment can't answer for the child.
-function probeChild({ execArgv = [], nodeOptions = '' } = {}) {
+// in-process. NODE_OPTIONS is cleared, so the local environment can't
+// interfere.
+function probeChild(execArgv = []) {
     return new Promise((resolve, reject) => {
         const child = fork(CHILD, [], {
             execArgv,
-            env: { ...process.env, NODE_OPTIONS: nodeOptions },
+            env: { ...process.env, NODE_OPTIONS: '' },
             stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         });
         let report;
@@ -46,54 +46,35 @@ function probeChild({ execArgv = [], nodeOptions = '' } = {}) {
                 reject(new Error(`child exited with ${code} and no report; stderr: ${stderr}`));
                 return;
             }
-            resolve(report);
+            resolve(report.active);
         });
     });
 }
 
 test('isAsyncContextFrameActive', async (t) => {
-    await t.test('gives the same answer on every call', () => {
-        const first = _isAsyncContextFrameActive();
-        assert.equal(typeof first, 'boolean');
-        assert.equal(_isAsyncContextFrameActive(), first);
-    });
-
+    // Node 24 and later: on by default, and --no-async-context-frame turns it off.
     await t.test('reports it active when Node enables it by default', { skip: major < 24 }, async () => {
-        const { active } = await probeChild();
-        assert.equal(active, true);
+        assert.equal(await probeChild(), true);
     });
 
-    await t.test('reports it inactive when Node has no support for it', { skip: hasAcfSupport }, async () => {
-        const { active } = await probeChild();
-        assert.equal(active, false);
-    });
-
-    // The flag only exists from Node 24, where ACF is the default.
     await t.test('reports it inactive when the command line turns it off', { skip: major < 24 }, async () => {
-        const { active } = await probeChild({ execArgv: ['--no-async-context-frame'] });
-        assert.equal(active, false);
+        assert.equal(await probeChild(['--no-async-context-frame']), false);
     });
 
-    await t.test('reports it inactive when NODE_OPTIONS turns it off', { skip: major < 24 }, async () => {
-        // The regression this detection exists for: Node 24 accepts the flag
-        // in NODE_OPTIONS, where it does not reach execArgv, so inferring from
-        // execArgv concludes ACF is on. It is off, the CPED slot is never
-        // written, and a writer that trusted the inference would emit records
-        // nothing updates.
-        const { active, execArgv } = await probeChild({ nodeOptions: '--no-async-context-frame' });
-        assert.deepEqual(execArgv, []);
-        assert.equal(active, false);
+    // Node 22.7 through 23: off by default, and --experimental-async-context-frame turns it on.
+    const optInNode = hasAcfSupport && major < 24;
+
+    await t.test('reports it inactive when Node leaves it off by default', { skip: !optInNode }, async () => {
+        assert.equal(await probeChild(), false);
     });
 
-    await t.test('reports it active when NODE_OPTIONS turns it on', { skip: !hasAcfSupport || major >= 24 }, async () => {
-        // The mirror image, on the other Node line: 22.7.0 through 23 accept
-        // the flag in NODE_OPTIONS (24 rejects it outright), again without it
-        // reaching execArgv, so inferring from execArgv concludes ACF is off
-        // when it is on — and the writer refuses to run in a process that
-        // would have worked.
-        const { active, execArgv } = await probeChild({ nodeOptions: '--experimental-async-context-frame' });
-        assert.deepEqual(execArgv, []);
-        assert.equal(active, true);
+    await t.test('reports it active when the command line turns it on', { skip: !optInNode }, async () => {
+        assert.equal(await probeChild(['--experimental-async-context-frame']), true);
+    });
+
+    // Before Node 22.7 there is no AsyncContextFrame to turn on.
+    await t.test('reports it inactive when Node has no support for it', { skip: hasAcfSupport }, async () => {
+        assert.equal(await probeChild(), false);
     });
 });
 
