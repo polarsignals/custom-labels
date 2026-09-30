@@ -8,12 +8,25 @@ let ThreadContext;
 let getContext;
 let clearContext;
 let isAsyncContextFrameActive;
+// Why this process can't honor the schema, if it can't. Only meaningful on
+// Linux, the one platform the reader contract covers.
+let whyUnpublishable = function () { return undefined; };
 
 if (process.platform === 'linux') {
     const bindings = require('bindings');
     const addon = bindings('customlabels');
 
     ThreadContext = addon.ThreadContext;
+
+    whyUnpublishable = function () {
+        if (!isAsyncContextFrameActive()) {
+            return `async_context_frame support is unavailable: ${asyncContextFrameHint()}`;
+        }
+        if (!addon.recordSlotOffsetHolds) {
+            return 'V8 does not place internal fields where the addon was built to expect them';
+        }
+        return undefined;
+    };
 
     const { AsyncLocalStorage } = require('node:async_hooks');
     let als;
@@ -64,8 +77,9 @@ if (process.platform === 'linux') {
 
     function ensureHook() {
         if (als) return;
-        if (!isAsyncContextFrameActive()) {
-            throw new Error(`otel thread-ctx writer requires async_context_frame support, which is unavailable: ${asyncContextFrameHint()}.`);
+        const reason = whyUnpublishable();
+        if (reason) {
+            throw new Error(`otel thread-ctx writer can't publish on this Node: ${reason}.`);
         }
         als = new AsyncLocalStorage();
         addon.storeAls(als);
@@ -138,6 +152,11 @@ if (process.platform === 'linux') {
  * into the caller's process-context attribute map.
  */
 function getProcessContextAttributes(keys) {
+    // A reader would find nothing or mis-walk, so don't declare the schema.
+    const reason = whyUnpublishable();
+    if (reason) {
+        throw new Error(`can't declare ${SCHEMA_VERSION} on this Node: ${reason}.`);
+    }
     if (!Array.isArray(keys)) {
         throw new TypeError('keys must be an array of attribute names');
     }

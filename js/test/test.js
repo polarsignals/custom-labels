@@ -630,6 +630,13 @@ test('appendAttributes after invalidate mutates attrs_data but leaves valid=0', 
     });
 });
 
+test('internal field 0 sits at the record slot offset the addon publishes', () => {
+    // The offset differs between V8 versions, so the addon checks at load
+    // time that it matches where V8 actually puts the field.
+    assert.equal(require('bindings')('customlabels').recordSlotOffsetHolds, true);
+    assert.doesNotThrow(() => getProcessContextAttributes([]));
+});
+
 test('otel_thread_ctx_nodejs_v1 is exported as a TLS dynsym', (t) => {
     const addon = path.join(__dirname, '..', 'build', 'Release', 'customlabels.node');
     if (!require('node:fs').existsSync(addon)) {

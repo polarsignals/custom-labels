@@ -208,6 +208,10 @@ uint8 key index N on the wire.
 `keys` is validated: must be a string array of length ≤ 256 with no
 duplicates.
 
+On Linux it throws instead if the process can't honor the schema — when
+AsyncContextFrame is off, or when V8 doesn't place internal fields where the
+addon expects.
+
 ```javascript
 {
     'threadlocal.schema_version': 'nodejs_v1_dev',
@@ -221,11 +225,17 @@ keeps the writer-side index-to-name mapping in sync with what an external
 reader will use to decode the on-the-wire `key_index` bytes.
 
 The V8 object layout a reader walks from the async-context frame to the
-record is not published; the `nodejs_v1` schema version fixes it, and with
-it presumes the V8 Node.js builds by default (64-bit, pointer compression
-off, sandbox off). The addon derives the same values from the V8 headers it
-is compiled against and `static_assert`s them, so a build not matching the
-schema will fail to compile.
+record is mostly not published; the `nodejs_v1` schema version fixes it, and
+with it presumes the V8 Node.js builds by default (64-bit, pointer
+compression off, sandbox off). The addon derives the same values from the V8
+headers it is compiled against and `static_assert`s them, so a build not
+matching the schema will fail to compile. The one exception is the offset of
+the wrapper object's internal field 0, which moved between V8 versions Node
+ships (24 on Node 22, 32 from Node 23 on); the addon publishes it in the
+discovery struct below, and checks it at load time by reading an internal
+field back at that offset. If the check fails, `getProcessContextAttributes`
+and `ThreadContext`'s `enter()` / `run()` throw rather than declare a schema
+the process doesn't match.
 
 ## Discovery contract (for reader implementers)
 
@@ -244,8 +254,8 @@ The writer publishes three things the reader needs to find:
      find the current isolate.
 
      An all-zero value here means the addon has published nothing on this
-     thread, or has torn it down again, and none of the other three fields may
-     be used. No live isolate has its CPED slot at address zero, and this is
+     thread, or has torn it down again, and none of the other fields may be
+     used. No live isolate has its CPED slot at address zero, and this is
      the pointer the reader dereferences first, so testing it needs no
      assumption about any other field. The addon writes it last when publishing
      and clears it first on teardown, so its zero/nonzero value is always on
@@ -257,6 +267,11 @@ The writer publishes three things the reader needs to find:
    - offset `2 * sizeof(void *)`, size `sizeof(int)` — `als_identity_hash`,
      the JS identity hash of that ALS instance. Useful for narrowing the
      search to a single hash bucket inside the `AsyncContextFrame`'s map.
+   - offset `2 * sizeof(void *) + 4`, size 1 — `record_slot_offset`, the byte
+     offset of internal field 0 within the wrapper `JSObject` the reader finds
+     in the frame, i.e. where the record pointer is.
+   - offset `2 * sizeof(void *) + 5`, size 3 — reserved, zero. Readers must
+     ignore these bytes.
    - offset `3 * sizeof(void *)`, size `sizeof(void *)` —
      `undefined_addr`, the per-isolate tagged address of V8's `undefined`
      singleton. The reader compares the value it retrieves for the ALS
@@ -266,9 +281,10 @@ The writer publishes three things the reader needs to find:
      slot happens to hold undefined.
 
 
-  All four fields are fixed while a particular V8 isolate lives, but they are
-  not written only once: the addon populates them when the hook is installed
-  and zeroes them again at teardown. A reader must therefore re-read the struct
+  `cped_slot`, `als_handle`, `als_identity_hash` and `undefined_addr` are
+  fixed while a particular V8 isolate lives, but they are not written only
+  once: the addon populates them when the hook is installed and zeroes them
+  again at teardown. A reader must therefore re-read the struct
   on every sample rather than caching field values; one holding a
   pre-teardown copy would go on walking a dead isolate's `cped_slot`, and
   caching `undefined_addr` specifically defeats the liveness check above. What
@@ -311,9 +327,8 @@ extract).
 
 ```cpp
 // V8 object layout: the `table` field of a JSMap sits immediately after the
-// JSObject header, and internal field 0 of the wrapper JSObject sits there
-// too.
-constexpr size_t js_map_table_offset = 24, js_object_record_offset = 24;
+// JSObject header.
+constexpr size_t js_map_table_offset = 24;
 
 auto* ctx = read_tls<otel_thread_ctx_nodejs_v1_t>();
 // Zero cped_slot means nothing is published on this thread (never was, or
@@ -349,7 +364,7 @@ if (e->value == ctx->undefined_addr) return NO_CONTEXT;  // explicit undefined
 // because the pointer is aligned and Node's V8 has no sandbox).
 auto* wrap_js = untag<JSObject>(e->value);
 auto* record =
-    *(OtelThreadCtxRecord**)((char*)wrap_js + js_object_record_offset);
+    *(OtelThreadCtxRecord**)((char*)wrap_js + ctx->record_slot_offset);
 if (record->valid != 1) return NO_CONTEXT;  // mid in-place update; skip
 // trace_id, span_id, and attrs_data[0 .. attrs_data_size) are now usable.
 ```
