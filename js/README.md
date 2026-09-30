@@ -304,9 +304,9 @@ high 32 bits hold the integer payload (arithmetic-shift right by 32 to
 extract).
 
 ```cpp
-// V8 object layout, fixed by the schema version rather than published: the
-// `table` field of a JSMap sits immediately after the JSObject header, and
-// internal field 0 of the wrapper JSObject sits there too.
+// V8 object layout: the `table` field of a JSMap sits immediately after the
+// JSObject header, and internal field 0 of the wrapper JSObject sits there
+// too.
 constexpr size_t js_map_table_offset = 24, js_object_record_offset = 24;
 
 auto* ctx = read_tls<otel_thread_ctx_nodejs_v1_t>();

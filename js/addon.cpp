@@ -890,26 +890,21 @@ void GetStoredAlsHash(const FunctionCallbackInfo<Value>& args) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
-// The nodejs_v1 discovery schema does not publish V8's object layout; it
-// fixes it, presuming the V8 Node.js builds by default: 64-bit, pointer
+// The reader assumes the default V8 Node.js configuration: 64-bit, pointer
 // compression off, sandbox off. These assertions check that presumption
 // against the V8 headers we are compiled with, so a build not matching
 // the schema will fail to compile.
 //
 // Each value the reader needs equals one of V8's public constants:
-//   tagged size (8)            kApiTaggedSize
-//   JSMap table offset (0x18)  kJSObjectHeaderSize, because JSCollection
-//                              adds a single `table` field to JSObject
-//                              (deps/v8/src/objects/js-collection.h)
-//   OrderedHashMap header      kFixedArrayHeaderSize, because
-//   size (0x10)                OrderedHashTable derives from FixedArray
-//                              (deps/v8/src/objects/ordered-hash-table.h)
-//   record slot offset (0x18)  kJSObjectHeaderSize plus
-//                              kEmbedderDataSlotExternalPointerOffset,
-//                              which is 0 without the sandbox: internal
-//                              field 0, which we set via
-//                              SetAlignedPointerInInternalField, then holds
-//                              the raw record pointer
+// * tagged size (8) = kApiTaggedSize
+// * JSMap table offset (0x18) = kJSObjectHeaderSize, because JSCollection
+//     adds a single `table` field to JSObject
+//     (deps/v8/src/objects/ordered-hash-table.h)
+// * OrderedHashMap header size (0x10) = kFixedArrayHeaderSize, because
+//     OrderedHashTable derives from FixedArray 
+//     (deps/v8/src/objects/ordered-hash-table.h)
+// * record slot offset (0x18) = kJSObjectHeaderSize plus
+//     kEmbedderDataSlotExternalPointerOffset
 static_assert(v8::internal::kApiTaggedSize == 8,
               "nodejs_v1 assumes a V8 built without pointer compression");
 static_assert(v8::internal::Internals::kJSObjectHeaderSize == 0x18,
