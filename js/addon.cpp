@@ -847,11 +847,9 @@ void StoreAls(const FunctionCallbackInfo<Value>& args) {
       v8::internal::Internals::kContinuationPreservedEmbedderDataOffset);
 #else
   // Node < 22 lacks ContinuationPreservedEmbedderData entirely (and the
-  // associated V8 internal offset). The JS layer refuses to install the
-  // hook on these versions via isAsyncContextFrameActive, so storeAls is
-  // never called from JS — this null assignment is here so the addon
-  // compiles on the older Node versions the package supports and also
-  // cped_slot == nullptr serves as the reader gate.
+  // associated V8 internal offset). This null assignment is here so the addon
+  // compiles on the older Node versions and also cped_slot == nullptr serves
+  // as the reader gate.
   v8::internal::Address* slot = nullptr;
 #endif
   // `undefined_addr == 0` marks "no cleanup hook registered for this thread
