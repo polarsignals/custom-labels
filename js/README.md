@@ -9,9 +9,15 @@ distributed tracing, user contexts, or any other metadata.
 
 ## Requirements
 
-- Node.js v22 or later
-- Node.js v22-v23: requires `--experimental-async-context-frame` flag
-- Node.js v24+: works without additional flags
+- Node.js v22.7 or later
+- Node.js v22.7-v23: requires the `--experimental-async-context-frame` flag,
+  on the command line or in `NODE_OPTIONS`
+- Node.js v24+: works without additional flags, unless AsyncContextFrame is
+  turned off with `--no-async-context-frame`
+
+This package combines compile-time and run-time validation to
+ensure it works on the Node.js version it gets compiled/loaded into,
+rather than assuming based on version/flags.
 - A C++ toolchain (`node-gyp`) supporting `-mtls-dialect=gnu2` on x86_64
   (GCC ≥ 4.4 or Clang ≥ 19) — needed for the TLSDESC dialect used by the
   discovery thread-locals.

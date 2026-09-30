@@ -847,11 +847,9 @@ void StoreAls(const FunctionCallbackInfo<Value>& args) {
       v8::internal::Internals::kContinuationPreservedEmbedderDataOffset);
 #else
   // Node < 22 lacks ContinuationPreservedEmbedderData entirely (and the
-  // associated V8 internal offset). The JS layer refuses to install the
-  // hook on these versions via asyncContextFrameError, so storeAls is
-  // never called from JS — this null assignment is here so the addon
-  // compiles on the older Node versions the package supports and also
-  // cped_slot == nullptr serves as the reader gate.
+  // associated V8 internal offset). This null assignment is here so the addon
+  // compiles on the older Node versions and also cped_slot == nullptr serves
+  // as the reader gate.
   v8::internal::Address* slot = nullptr;
 #endif
   // `undefined_addr == 0` marks "no cleanup hook registered for this thread
@@ -875,6 +873,38 @@ void StoreAls(const FunctionCallbackInfo<Value>& args) {
   std::atomic_signal_fence(std::memory_order_release);
   *reinterpret_cast<v8::internal::Address* volatile*>(
       &otel_thread_ctx_nodejs_v1.cped_slot) = slot;
+}
+
+// Whether the isolate's ContinuationPreservedEmbedderData is a JS Map that
+// currently binds `key` to `value`.
+//
+// This exists for AsyncContextFrame feature detection. With ACF active, Node
+// implements AsyncLocalStorage#run by installing an AsyncContextFrame — a JS
+// Map keyed by the AsyncLocalStorage instance — as the CPED of the running
+// continuation. Calling this from inside a run() with the storage and its
+// store therefore validates the property we depend on.
+void CpedMapContains(const FunctionCallbackInfo<Value>& args) {
+#if NODE_MAJOR_VERSION >= 22
+  // A malformed call must not accidentally answer true by comparing an absent
+  // key's undefined against an undefined expected value.
+  if (args.Length() >= 2) {
+    Isolate* isolate = args.GetIsolate();
+    Local<Value> cped = isolate->GetContinuationPreservedEmbedderData();
+    if (!cped.IsEmpty() && cped->IsMap()) {
+      Local<Context> context = isolate->GetCurrentContext();
+      if (!context.IsEmpty()) {
+        Local<Value> found;
+        if (cped.As<v8::Map>()->Get(context, args[0]).ToLocal(&found)) {
+          args.GetReturnValue().Set(found->StrictEquals(args[1]));
+          return;
+        }
+      }
+    }
+  }
+#endif
+  // Either code above didn't reach the innermost if statement, or
+  // we're compiling for Node.js < 22.
+  args.GetReturnValue().Set(false);
 }
 
 // Without a function that explicitly reads the TLS variable, on x86 the
@@ -924,6 +954,7 @@ NODE_MODULE_INIT() {
   CtxWrap::Init(exports);
   NODE_SET_METHOD(exports, "storeAls", StoreAls);
   NODE_SET_METHOD(exports, "getStoredAlsHash", GetStoredAlsHash);
+  NODE_SET_METHOD(exports, "cpedMapContains", CpedMapContains);
 }
 
 #pragma GCC diagnostic pop

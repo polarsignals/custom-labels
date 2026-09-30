@@ -8,23 +8,9 @@ if (process.platform !== 'linux') {
     return;
 }
 
-// AsyncContextFrame (the writer's discovery substrate) is opt-in on Node
-// 22/23 (via --experimental-async-context-frame), on by default in Node
-// 24+ (disable-able via --no-async-context-frame), and absent on Node <
-// 22. The "test" npm script supplies the flag, but a direct `node
-// test/test.js` invocation without it would have every test fail noisily
-// — bail cleanly instead.
-function isAsyncContextFrameAvailable() {
-    if (process.execArgv.includes('--no-async-context-frame')) return false;
-    const major = Number(process.versions.node.split('.')[0]);
-    if (major >= 24) return true;
-    if (major >= 22) {
-        return process.execArgv.includes('--experimental-async-context-frame');
-    }
-    return false;
-}
+const lib = require('..');
 
-if (!isAsyncContextFrameAvailable()) {
+if (!lib._isAsyncContextFrameActive()) {
     console.log('Skipping native tests: AsyncContextFrame is unavailable on this Node. ' +
                 'Use Node 24+ or launch with --experimental-async-context-frame on Node 22/23.');
     return;
@@ -33,7 +19,6 @@ if (!isAsyncContextFrameAvailable()) {
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const lib = require('..');
 const { ThreadContext, getContext, clearContext, getProcessContextAttributes, _currentRecordBytes } = lib;
 
 const TRACE_ID_BYTES = bytesFromHex('0102030405060708090a0b0c0d0e0f10');
