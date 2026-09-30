@@ -15,8 +15,9 @@ distributed tracing, user contexts, or any other metadata.
 - Node.js v24+: works without additional flags, unless AsyncContextFrame is
   turned off with `--no-async-context-frame`
 
-The package detects AsyncContextFrame at runtime rather than inferring it from
-the Node version and flags.
+This package combines compile-time and run-time validation to
+ensure it works on the Node.js version it gets compiled/loaded into,
+rather than assuming based on version/flags.
 - A C++ toolchain (`node-gyp`) supporting `-mtls-dialect=gnu2` on x86_64
   (GCC ≥ 4.4 or Clang ≥ 19) — needed for the TLSDESC dialect used by the
   discovery thread-locals.

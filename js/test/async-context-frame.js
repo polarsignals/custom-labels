@@ -22,7 +22,7 @@ const addon = require('bindings')('customlabels');
 const CHILD = path.join(__dirname, 'async-context-frame-child.js');
 
 const [major, minor] = process.versions.node.split('.').map(Number);
-// ACF landed in 22.7.0, so the opt-in routes are gated on that, not on major 22.
+// ACF landed in 22.7.0
 const hasAcfSupport = major > 22 || (major === 22 && minor >= 7);
 
 // Runs the probe in a child process configured the way the test wants, since

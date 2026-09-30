@@ -25,11 +25,6 @@ if (process.platform === 'linux') {
     // ContinuationPreservedEmbedderData slot that an out-of-process reader
     // walks.
     //
-    // Feature-detected rather than inferred from the Node version plus
-    // `process.execArgv`, because the two can disagree (and `execArgv` is not
-    // reliable anyway; it can be rewritten by tooling or not passed on to a
-    // worker thread).
-    //
     // Detected by asking the addon what is in the CPED slot during a `run()`.
     // With ACF, Node installs an AsyncContextFrame — a JS Map keyed by the
     // AsyncLocalStorage instance, valued by its store — as the running
@@ -170,6 +165,6 @@ exports.ThreadContext = ThreadContext;
 exports.getContext = getContext;
 exports.clearContext = clearContext;
 exports.getProcessContextAttributes = getProcessContextAttributes;
-// Not part of the stable API; for tests and for callers that would rather
+// Not part of the stable API
 // check up front than catch the error enter() / run() throw without ACF.
 exports._isAsyncContextFrameActive = isAsyncContextFrameActive;

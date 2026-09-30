@@ -884,8 +884,7 @@ void StoreAls(const FunctionCallbackInfo<Value>& args) {
 // implements AsyncLocalStorage#run by installing an AsyncContextFrame — a JS
 // Map keyed by the AsyncLocalStorage instance — as the CPED of the running
 // continuation. Calling this from inside a run() with the storage and its
-// store therefore observes the property this addon actually depends on,
-// instead of inferring it from the Node version or process.execArgv.
+// store therefore validates the property we depend on.
 void CpedMapContains(const FunctionCallbackInfo<Value>& args) {
 #if NODE_MAJOR_VERSION >= 22
   // A malformed call must not accidentally answer true by comparing an absent
