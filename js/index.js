@@ -2,16 +2,6 @@
 
 const SCHEMA_VERSION = 'nodejs_v1_dev';
 
-// V8 layout constants the addon captured from the V8 headers Node bundles.
-// On non-Linux these fall back to the values matching Node's standard
-// build (no V8 pointer compression, no sandbox) — the reader is Linux-only
-// per the OTEP anyway, so non-Linux callers republishing process context
-// see consistent values.
-let JS_OBJECT_RECORD_OFFSET = 0x18;
-let TAGGED_SIZE = 8;
-let JS_MAP_TABLE_OFFSET = 0x18;
-let ORDERED_HASH_MAP_HEADER_SIZE = 0x10;
-
 // Public surface, populated by the Linux branch below. On other
 // platforms these stay as no-op stubs / a sham class.
 let ThreadContext;
@@ -22,10 +12,6 @@ let isAsyncContextFrameActive;
 if (process.platform === 'linux') {
     const bindings = require('bindings');
     const addon = bindings('customlabels');
-    JS_OBJECT_RECORD_OFFSET = addon.jsObjectRecordOffset;
-    TAGGED_SIZE = addon.taggedSize;
-    JS_MAP_TABLE_OFFSET = addon.jsMapTableOffset;
-    ORDERED_HASH_MAP_HEADER_SIZE = addon.orderedHashMapHeaderSize;
 
     ThreadContext = addon.ThreadContext;
 
@@ -177,10 +163,6 @@ function getProcessContextAttributes(keys) {
     return Object.freeze({
         'threadlocal.schema_version': SCHEMA_VERSION,
         'threadlocal.attribute_key_map': Object.freeze(keys.slice()),
-        'threadlocal.js_object_record_offset': JS_OBJECT_RECORD_OFFSET,
-        'threadlocal.tagged_size': TAGGED_SIZE,
-        'threadlocal.js_map_table_offset': JS_MAP_TABLE_OFFSET,
-        'threadlocal.ordered_hash_map_header_size': ORDERED_HASH_MAP_HEADER_SIZE,
     });
 }
 

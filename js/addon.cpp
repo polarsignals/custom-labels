@@ -40,7 +40,7 @@ using v8::Object;
 //    ACF map, the reader can compare against this to skip the JSObject /
 //    internal-field-0 dereference when no ThreadContext is currently attached;
 //    without it, a reader walking through undefined would have to rely on
-//    structural validation of the bytes at undefined+js_object_record_offset
+//    structural validation of the bytes at undefined+<record slot offset>
 //    to detect the absence.
 //
 // Layout is part of the reader ABI: see the README "Discovery contract"
@@ -923,68 +923,41 @@ void GetStoredAlsHash(const FunctionCallbackInfo<Value>& args) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
-// V8 layout constants captured at addon-compile time from the same V8
-// headers Node bundles. Published via the discovery contract so an
-// out-of-process reader can decode V8's JSObject / internal hashmap layout
-// without doing its own V8-internal-symbol lookups for the
-// pointer-compression / sandbox state.
+// The reader assumes the default V8 Node.js configuration: 64-bit, pointer
+// compression off, sandbox off. These assertions check that presumption
+// against the V8 headers we are compiled with, so a build not matching
+// the schema will fail to compile.
 //
-// `js_object_record_offset` is the byte offset, within the JSObject holding a
-// ThreadContext, of the slot holding the pointer to its record — internal
-// field 0, which we set via SetAlignedPointerInInternalField and the reader
-// dereferences. Note it locates the *pointer*, not the record: the reader adds
-// it to the JSObject address and then loads. It depends on V8's
-// pointer-compression and sandbox build flags.
-//
-// `tagged_size` is V8's tagged pointer width (4 with pointer compression,
-// 8 without). Together these are sufficient to derive every other V8
-// layout offset our discovery contract relies on.
+// Each value the reader needs equals one of V8's public constants:
+// * tagged size (8) = kApiTaggedSize
+// * JSMap table offset (0x18) = kJSObjectHeaderSize, because JSCollection
+//     adds a single `table` field to JSObject
+//     (deps/v8/src/objects/ordered-hash-table.h)
+// * OrderedHashMap header size (0x10) = kFixedArrayHeaderSize, because
+//     OrderedHashTable derives from FixedArray 
+//     (deps/v8/src/objects/ordered-hash-table.h)
+// * record slot offset (0x18) = kJSObjectHeaderSize plus
+//     kEmbedderDataSlotExternalPointerOffset
+static_assert(v8::internal::kApiTaggedSize == 8,
+              "nodejs_v1 assumes a V8 built without pointer compression");
+static_assert(v8::internal::Internals::kJSObjectHeaderSize == 0x18,
+              "unexpected V8 JSObject header size");
+static_assert(v8::internal::Internals::kFixedArrayHeaderSize == 0x10,
+              "unexpected V8 FixedArray header size");
 #if NODE_MAJOR_VERSION >= 22
-constexpr int JS_OBJECT_RECORD_OFFSET =
-    v8::internal::Internals::kJSObjectHeaderSize +
+// Node < 22 lacks this constant; the contract is unusable there anyway,
+// as it has no ContinuationPreservedEmbedderData either (see storeAls).
+constexpr int kEmbedderDataSlotExternalPtrOffset =
     v8::internal::Internals::kEmbedderDataSlotExternalPointerOffset;
-#else
-// Node < 22 lacks kEmbedderDataSlotExternalPointerOffset. The discovery
-// contract isn't usable on these versions (no ContinuationPreservedEmbedderData
-// either — see storeAls), so this value is published only to keep the
-// addon's exported surface consistent across Node majors. A would-be
-// reader cannot reach a live record through it.
-constexpr int JS_OBJECT_RECORD_OFFSET = 0;
+static_assert(kEmbedderDataSlotExternalPtrOffset == 0,
+              "nodejs_v1 assumes a V8 built without the sandbox");
 #endif
-constexpr int TAGGED_SIZE = v8::internal::kApiTaggedSize;
-
-// V8 JSMap layout: kTableOffset within the JSMap object holds a tagged
-// pointer to the backing OrderedHashMap table. Not exposed in V8's
-// public headers; kept in sync with
-// deps/v8/src/objects/js-collection.h (JSCollection::kTableOffset)
-// and the torque-generated JSCollection layout.
-constexpr int JS_MAP_TABLE_OFFSET = 0x18;
-
-// V8 OrderedHashMap layout: the on-heap table starts with a 16-byte
-// header before the element_count / deleted_element_count /
-// number_of_buckets fields. Not exposed in V8's public headers; kept in
-// sync with deps/v8/src/objects/ordered-hash-table.h
-// (OrderedHashTable base layout).
-constexpr int ORDERED_HASH_MAP_HEADER_SIZE = 0x10;
 
 NODE_MODULE_INIT() {
   CtxWrap::Init(exports);
   NODE_SET_METHOD(exports, "storeAls", StoreAls);
   NODE_SET_METHOD(exports, "getStoredAlsHash", GetStoredAlsHash);
   NODE_SET_METHOD(exports, "cpedMapContains", CpedMapContains);
-
-  Isolate* isolate = Isolate::GetCurrent();
-  auto publish_int = [&](const char* name, int value) {
-    exports
-        ->Set(context,
-              String::NewFromUtf8(isolate, name).ToLocalChecked(),
-              Integer::New(isolate, value))
-        .FromJust();
-  };
-  publish_int("jsMapTableOffset", JS_MAP_TABLE_OFFSET);
-  publish_int("orderedHashMapHeaderSize", ORDERED_HASH_MAP_HEADER_SIZE);
-  publish_int("taggedSize", TAGGED_SIZE);
-  publish_int("jsObjectRecordOffset", JS_OBJECT_RECORD_OFFSET);
 }
 
 #pragma GCC diagnostic pop
