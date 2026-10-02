@@ -13,7 +13,7 @@ if (process.platform !== 'linux') {
 }
 
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { fork } = require('node:child_process');
+const { fork, spawnSync } = require('node:child_process');
 const path = require('node:path');
 
 const { _isAsyncContextFrameActive } = require('..');
@@ -76,6 +76,23 @@ test('isAsyncContextFrameActive', async (t) => {
     await t.test('reports it inactive when Node has no support for it', { skip: hasAcfSupport }, async () => {
         assert.equal(await probeChild(), false);
     });
+});
+
+test('getProcessContextAttributes refuses to declare the schema without AsyncContextFrame', () => {
+    // Nothing would ever write the CPED slot, so a reader told the schema is
+    // in use would find nothing.
+    const off = major >= 24 ? ['--no-async-context-frame'] : [];
+    const lib = JSON.stringify(path.join(__dirname, '..'));
+    const r = spawnSync(process.execPath, [...off, '-e', `
+        try {
+            require(${lib}).getProcessContextAttributes([]);
+            console.log('declared');
+        } catch (e) {
+            console.log(e.message);
+        }`], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    // Not the exit status: under a sanitizer, LeakSanitizer fails the child for
+    // leaks in Node's own `-e` startup path.
+    assert.match(r.stdout, /can't declare .* async_context_frame support is unavailable/, r.stderr);
 });
 
 // The detection asks whether the running storage is bound to its own store,
