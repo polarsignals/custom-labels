@@ -159,6 +159,14 @@ void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value> &args) {
       return;
     }
 
+#if V8_MAJOR_VERSION >= 14
+    size_t k_len = k->Utf8LengthV2(isolate);
+    auto k_buf = std::make_unique<char[]>(k_len);
+    size_t v_len = v->Utf8LengthV2(isolate);
+    auto v_buf = std::make_unique<char[]>(v_len);
+    k->WriteUtf8V2(isolate, k_buf.get(), k_len);
+    v->WriteUtf8V2(isolate, v_buf.get(), v_len);
+#else
     int k_len = k->Utf8Length(isolate);
     auto k_buf = std::make_unique<char[]>(k_len);
 
@@ -169,6 +177,7 @@ void ClWrap::New(const v8::FunctionCallbackInfo<v8::Value> &args) {
                  String::NO_NULL_TERMINATION);
     v->WriteUtf8(isolate, v_buf.get(), v_len, nullptr,
                  String::NO_NULL_TERMINATION);
+#endif
 
     custom_labels_string_t key{(size_t)k_len, (unsigned char *)k_buf.get()};
     custom_labels_string_t value{(size_t)v_len, (unsigned char *)v_buf.get()};
@@ -273,6 +282,13 @@ void GetStoredHash(const v8::FunctionCallbackInfo<v8::Value> &args) {
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 
 NODE_MODULE_INIT() {
+  node::AddEnvironmentCleanupHook(
+      v8::Isolate::GetCurrent(),
+      [](void *) {
+        custom_labels_als_handle.Reset();
+        custom_labels_als_identity_hash = 0;
+      },
+      nullptr);
   ClWrap::Init(exports);
   NODE_SET_METHOD(exports, "storeHash", StoreHash);
 }
